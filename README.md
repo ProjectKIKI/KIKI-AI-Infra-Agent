@@ -38,6 +38,18 @@
 
 ```
 
+## 설치 방법
+
+설치는 다음과 같이 진행 합니다.
+
+```bash
+dnf install python3.11
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
 ## 실행 예시
 
 ### Ansible Backend(지원)
