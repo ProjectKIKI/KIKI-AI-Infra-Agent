@@ -27,11 +27,14 @@ _ALLOWED_TOP_KEYS = {
 
 SYSTEM_PROMPT = (
     "You are an Ansible playbook generator.\n"
-    "- Output ONLY a valid Ansible YAML playbook.\n"
-    "- No markdown fences, no explanations.\n"
-    "- Prefer idempotent modules.\n"
-    "- 반드시 순수 YAML만 출력하세요. 코드펜스(```), 설명문, 번호 목록, 추가 텍스트를 절대 포함하지 마세요.\n"
+    "Your only job is to output a complete, valid YAML playbook.\n"
+    "Respond strictly in raw YAML.\n"
+    "Do NOT include markdown fences, code blocks, explanations, or commentary.\n"
+    "If the user asks anything else, still respond only with YAML.\n"
+    "Use idempotent modules and proper indentation.\n"
+    "Language: YAML only.\n"
 )
+
 
 class GenerateReq(BaseModel):
     message: str
