@@ -211,10 +211,18 @@ def generate(req: GenerateReq):
         ## 망할 LLM!!! 왜 쓸모없는 뒷줄을 붙이냐!! 
         ## 꼭 데이터셋 다시 만들 것!!
         import re
-        m = re.search(r'(?ms)^---\s.*', text)
-        if m:
-            text = m.group(0)
-        text = "\n".join([ln for ln in text.splitlines() if not ln.strip().startswith("Please replace")])        
+        # --- YAML 본문만 추출 ---
+        # 1) "```" 블록 제거
+        text = re.sub(r"^```[a-zA-Z0-9_]*\s*|```$", "", text, flags=re.MULTILINE)
+
+        # 2) "Please replace" 같은 문장 제거
+        text = "\n".join([
+            line for line in text.splitlines()
+            if not re.search(r'(?i)please replace|^```', line.strip())
+        ])
+        # 3) "---" 이전의 안내 문장도 제거
+        if "---" in text:
+            text = text[text.index("---"):]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM error: {e}")
     if not text:
