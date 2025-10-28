@@ -18,12 +18,13 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 client = OpenAI(base_url=MODEL_URL, api_key=API_KEY)
 
-SYSTEM_PROMPT = (
-    "You are an Ansible playbook generator.\n"
-    "- Output ONLY a valid Ansible YAML playbook.\n"
-    "- No markdown fences, no explanations.\n"
-    "- Prefer idempotent modules.\n"
-)
+SYSTEM_PROMPT = ( "You are an Ansible playbook generator.\n" 
+    "Your only job is to output a complete, valid YAML playbook.\n" 
+    "Respond strictly in raw YAML.\n" 
+    "Do NOT include markdown fences, code blocks, explanations, or commentary.\n" 
+    "If the user asks anything else, still respond only with YAML.\n" 
+    "Use idempotent modules and proper indentation.\n" 
+    "Language: YAML only.\n" )
 
 class GenerateReq(BaseModel):
     message: str
