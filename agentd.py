@@ -11,20 +11,19 @@ import ansible_runner
 
 app = FastAPI(title="llama-ansible-agent", version="0.4.0")
 
-MODEL_URL = os.getenv("MODEL_URL", "http://127.0.0.1:8080/v1")
+MODEL_URL = os.getenv("MODEL_URL", "http://127.0.0.1:8000/v1")
 API_KEY   = os.getenv("API_KEY", "sk-noauth")
 WORK_DIR  = pathlib.Path(os.getenv("WORK_DIR", "/work"))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 client = OpenAI(base_url=MODEL_URL, api_key=API_KEY)
 
-SYSTEM_PROMPT = ( "You are an Ansible playbook generator.\n" 
-    "Your only job is to output a complete, valid YAML playbook.\n" 
-    "Respond strictly in raw YAML.\n" 
-    "Do NOT include markdown fences, code blocks, explanations, or commentary.\n" 
-    "If the user asks anything else, still respond only with YAML.\n" 
-    "Use idempotent modules and proper indentation.\n" 
-    "Language: YAML only.\n" )
+SYSTEM_PROMPT = (
+    "You are an Ansible playbook generator.\n"
+    "- Output ONLY a valid Ansible YAML playbook.\n"
+    "- No markdown fences, no explanations.\n"
+    "- Prefer idempotent modules.\n"
+)
 
 class GenerateReq(BaseModel):
     message: str
@@ -215,7 +214,8 @@ def generate(req: GenerateReq):
         raise HTTPException(status_code=422, detail="LLM returned empty content")
 
     write_file(pb_path, text)
-    preview = "\n".join(text.splitlines()[:120])
+    preview = "
+".join(text.splitlines()[:120])
     return {"task_id": run_id, "run_dir": str(run_dir), "playbook_name": pb_name, "playbook_preview": preview}
 
 @app.post("/api/v1/run")
