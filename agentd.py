@@ -208,14 +208,20 @@ def generate(req: GenerateReq):
     try:
         resp = client.chat.completions.create(**payload)
         text = (resp.choices[0].message.content or "").strip()
+        ## 망할 LLM!!! 왜 쓸모없는 뒷줄을 붙이냐!! 
+        ## 꼭 데이터셋 다시 만들 것!!
+        import re
+        m = re.search(r'(?ms)^---\s.*', text)
+        if m:
+            text = m.group(0)
+        text = "\n".join([ln for ln in text.splitlines() if not ln.strip().startswith("Please replace")])        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM error: {e}")
     if not text:
         raise HTTPException(status_code=422, detail="LLM returned empty content")
 
     write_file(pb_path, text)
-    preview = "
-".join(text.splitlines()[:120])
+    preview = "\\n".join(text.splitlines()[:120])
     return {"task_id": run_id, "run_dir": str(run_dir), "playbook_name": pb_name, "playbook_preview": preview}
 
 @app.post("/api/v1/run")

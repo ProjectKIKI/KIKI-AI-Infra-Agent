@@ -24,6 +24,21 @@
   3) (옵션) `--check --diff`로 **idempotency** 확인
 - 모든 산출물은 컨테이너 내부 `/work/run_<id>/`에 저장, **bundle.zip** 생성
 
+- **반드시 SELinux를 끄고 진행하세요. 켜져 있으면, 올바르게 빌드 및 실행이 안될 가능성이 높습니다.
+
+```bash
+getenforce
+setenforce 0
+```
+
+- 파일 시스템 설정
+```bash
+sudo mkdir -p /data/agent-work
+sudo chown -R 1000:1000 /data/agent-work
+sudo chmod -R 775 /data/agent-work
+sudo chcon -Rt svirt_sandbox_file_t /data/agent-work   # SELinux
+```
+
 ## 빠른 시작
 ```bash
 # 1) Agent 이미지 빌드
