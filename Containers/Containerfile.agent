@@ -1,31 +1,22 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client curl ca-certificates build-essential \
- && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends     openssh-client curl ca-certificates build-essential git tini jq  && rm -rf /var/lib/apt/lists/*
 
 ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 LANG=C.UTF-8
 
+RUN useradd -m -u 1000 -s /bin/bash agent
+USER agent
 WORKDIR /app
 
-COPY requirements.txt ./ 
+COPY --chown=agent:agent ../requirements.txt ./requirements.txt
+RUN python -m pip install -U pip &&     python -m pip install --no-cache-dir -r requirements.txt
 
-# root 권한으로 전역 설치 (안정)
-RUN python -m pip install -U pip && \
-    python -m pip install --no-cache-dir -r requirements.txt
+COPY --chown=agent:agent ../prompts.py ./prompts.py
+COPY --chown=agent:agent ../agentd.py ./agentd.py
 
-COPY agent_openai.py prompts.py example_inventory.ini ./ 
+RUN mkdir -p /work && mkdir -p /home/agent/.ssh && chmod 700 /home/agent/.ssh
 
-# 비루트 전환 (런타임)
-RUN useradd -m agent && chown -R agent:agent /app
-USER agent
+ENV MODEL_URL=http://127.0.0.1:8000/v1     API_KEY=sk-noauth     WORK_DIR=/work
 
-# 런타임 기본값 (Pod에서 args로 덮어써도 됨)
-ENV BASE_URL=http://127.0.0.1:8000/v1 \
-    API_KEY=sk-noauth \
-    MODEL_NAME=local-llama \
-    INVENTORY=/app/example_inventory.ini \
-    TASK="HTTPD 설치 및 index.html 배포" \
-    VERIFY=all
-
-ENTRYPOINT ["python", "agent_openai.py"]
+EXPOSE 8082
+ENTRYPOINT ["/usr/bin/tini","-g","--","uvicorn","agentd:app","--host","0.0.0.0","--port","8082","--proxy-headers"]

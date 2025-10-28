@@ -1,108 +1,61 @@
-# KIKI AI AGENT(LlamaCPP-Ansible Agent)
+# llama.cpp × Ansible Runner — Daemon & CLI (v0.4)
 
-이 프로젝트는 **AGENT → Ansible → OpenStack / Kubernetes** 흐름을 중심으로 동작하는 자동화 제어 에이전트이다.
-
-자연어 명령을 입력받아 Ansible 플레이북을 생성하거나, kubectl/OpenStack CLI를 직접 실행하는 **Direct 모드**를 지원한다.
-
-현재는 Python 기반으로 작성되어 있으며, 향후 Go 언어로 마이그레이션될 예정이다.
-
-이 프로젝트는 **KIKI 프로젝트** 중 하나의 하위 프로젝트. 추후에 OpenVINO로 변경 예정.
-
-## 아키텍처 개요(미확정)
-
-현재 구조는 **앤서블 플레이북**를 백엔드로 삼아서 API기반으로 호환성를 넓게 잡아가려고 함. 
-
-하지만, 추후에는 속도다 혹은 다양성 이유로 아키텍처 변경이 발생할 수 있음.
+두 컨테이너(LLM 서버, Agent 데몬)를 Podman Pod로 띄우고, 호스트에서 `kiki.py`로 자연어 작업을 보내
+**플레이북 생성 → 리뷰(승인) → 실행(ansible-runner) → ZIP 번들 다운로드**까지 자동화합니다.
 
 ```
-┌────────────────────────┐
-│     AI / External API   │
-│ (예: llama.cpp, GPT 등) │
-└──────────┬──────────────┘
-           │  자연어 명령(Task)
-           ▼
-┌────────────────────────┐
-│        AGENT Core       │
-│  (Python / Go 예정)     │
-│   ├─ 백엔드 선택 로직   │
-│   ├─ Ansible Runner     │
-│   └─ Direct Executor    │
-└──────────┬──────────────┘
-           │
-           ├──► Ansible Backend  
-           │      └─ openstack.cloud / kubernetes.core
-           │
-           └──► Direct Backend  
-                  ├─ adapters/k8s_apply.sh  
-                  └─ adapters/os_ensure_network.sh
-
++----------------------------+           +-----------------------------+
+|   llama.cpp (server)       |  HTTP API |   Agent Daemon (FastAPI)   |
+|   :8000 /v1 (OpenAI compat)| <-------> |   :8082 /api/v1/*          |
++----------------------------+           +-----------------------------+
+                                                 |
+                                                 | ansible-runner / ansible
+                                                 v
+                                          Target Hosts (SSH)
 ```
 
-## 설치 방법
+## 하이라이트
+- **inventory 전달 2가지 방식** 지원
+  - `--inventory /path/hosts.ini` : 컨테이너에서 보이는 경로를 직접 사용(마운트 필요)
+  - `--inventory-file ./hosts.ini` : 파일 내용을 본문으로 업로드(마운트 불필요)
+- 실행 단계
+  1) 문법 검사 `--syntax-check`
+  2) 적용
+  3) (옵션) `--check --diff`로 **idempotency** 확인
+- 모든 산출물은 컨테이너 내부 `/work/run_<id>/`에 저장, **bundle.zip** 생성
 
-설치는 다음과 같이 진행 합니다.
-
+## 빠른 시작
 ```bash
-dnf install python3.11
-python3.11 -m venv .venv
-source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install -r requirements.txt
-```
-
-## 실행 예시
-
-### Ansible Backend(지원)
-
-```bash
-python3 agent_openai.py --inventory localhost, --task "Kubernetes nginx 배포" --verify
-```
-
-### Direct Backend - Kubernetes(예정)
-
-```bash
-python3 agent_openai.py --backend direct --k8s-file k8s/deploy.yaml --verify
-```
-
-### Direct Backend - OpenStack(예정)
-
-```bash
-python3 agent_openai.py --backend direct --openstack-op ensure-network --openstack-args name=net-infra cidr=192.168.10.0/24 --verify
-```
-
-### 컨테이너 이미지 빌드
-
-```bash
-# 1) 모델 폴더 준비(호스트): /data/models에 GGUF 파일 배치
-#    예) /data/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
-
-# 2) 컨테이너 빌드
-# llama.cpp는 공인 이미지 그대로 사용한다.
-# ghcr.io/ggerganov/llama.cpp:server
-# --model /models/\<your.gguf> --ctx-size 4096 --host 0.0.0.0 --port 8000
-
+# 1) Agent 이미지 빌드
 podman build -f Containers/Containerfile.agent -t localhost/llama-ansible-agent:latest .
 
-# 2) Pod 생성 & 실행 (Kube YAML)
-podman play kube Containers/pod-llama-ansible.yaml
+# 2) Pod 실행 (llama.cpp + Agent)
+podman play kube Containers/pod-llama-ansible.yaml --replace
 
-# 3) 상태 확인
-podman pod ps
-podman ps --pod
-podman logs -f --names llama-ansible-pod-ansible-agent
-podman logs -f --names llama-ansible-pod-llama-server
-
-podman pod stop llama-ansible-pod
-podman pod rm llama-ansible-pod
+# SELinux Enforcing 환경인 경우 권장
+sudo chcon -Rt svirt_sandbox_file_t /data/models /data/agent-work /root/.ssh
 ```
 
-## 향후 계획
+## 사용법 (호스트 CLI)
+```bash
+python3 kiki.py   --base-url http://127.0.0.1:8082   --model local-llama   --message "HTTPD 설치 및 index.html 배포"   --max-token 256   --temperature 0.5   --inventory "node1,node2,node3"   --verify all
+```
 
-- Go 언어로 마이그레이션
-- client-go / gophercloud 네이티브 연동
-- 분산형 에이전트 및 UI 콘솔 추가
-- 오픈스택/쿠버네티스 자연어 처리
+### inventory 파일을 업로드하여 사용 (권장: 마운트 불필요)
+```bash
+python3 kiki.py   --base-url http://127.0.0.1:8082   --message "OpenStack 프로젝트/유저/네트워크 자동 생성"   --inventory "ignored"   --inventory-file ./hosts.ini   --verify all
+```
+
+### 인자 요약
+- `--name myplay` : 플레이북 파일명 지정(중복 시 자동 suffix)
+- `--yes` : 미리보기 후 자동 승인
+- `--engine ansible` : ansible CLI 경로 사용(기본은 ansible-runner)
+- `--out` : 번들 로컬 저장 경로(생략 시 `./bundle-<task>.zip`)
+
+## 경로
+- 모델 파일: `/data/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf`
+- 작업 디렉터리: `/data/agent-work`
+- SSH 키: `/root/.ssh` (pod yaml에서 변경 가능)
 
 ## 라이선스
-
-이 프로젝트는 GNU GPLv3 라이선스로 배포된다. 배포 시, 출처 및 이름만 밝혀 주시면 됩니다. :) 
+- 예시 코드: MIT
