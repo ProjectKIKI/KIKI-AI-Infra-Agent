@@ -1,3 +1,5 @@
+## IBM 데이터 셋..다시는 사용하는가 봐라!! ㅠㅠ
+
 #!/usr/bin/env python3
 import os, re, json, uuid, shutil, pathlib, subprocess, zipfile
 import yaml
@@ -308,86 +310,51 @@ def download_bundle(task_id: str):
 def sanitize_yaml(text: str) -> str:
     """
     LLM 출력에서 순수 YAML 플레이북만 추출한다.
-    - ``` 코드펜스 제거
-    - 안내문/설명 제거
-    - 맨 앞의 '---' 문서구분선 기준으로 본문만 취함
-    - YAML 파싱 실패 시, 비정형 라인 제거 후 재시도
+    오류가 나도 절대 예외를 던지지 않는다.
     """
-    # 0) 코드펜스 제거
-    text = text.strip()
-    text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE)
+    try:
+        # 코드펜스 제거
+        text = text.strip()
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE)
 
-    # 1) '---' 이후만 취함
-    if "---" in text:
-        text = text[text.index("---"):]
-    else:
-        m = re.search(r"(?m)^\s*-\s*name\s*:", text)
-        if m:
-            text = text[m.start():]
+        # '---' 이후부터
+        if "---" in text:
+            text = text[text.index("---"):]
+        # 기본 정리
+        text = text.replace("\r\n", "\n").strip() + "\n"
 
-    # 2) 설명성 라인 제거
-    drop_patterns = [
-        r"(?i)^\s*please replace\b",
-        r"(?i)^\s*this playbook will\b",
-        r"(?i)^\s*note\b[:：]",
-        r"(?i)^\s*instructions?:",
-        r"^\s*[-*]\s+\w+.*:.*\(.*\)",
-        r"^\s*\d+\.\s+.+",
-        r"^\s*#+\s+.+",
-        r"^\s*>\s+.+",
-        r"^\s*<!--.*?-->\s*$",
-        r"^\s*`{3,}.*$",
-    ]
-    cleaned_lines = []
-    for ln in text.splitlines():
-        if any(re.search(p, ln) for p in drop_patterns):
-            continue
-        cleaned_lines.append(ln)
-    text = "\n".join(cleaned_lines).strip() + "\n"
-
-    # 3) YAML 유효성 검사
-    def _is_valid_playbook(s: str) -> bool:
+        # 유효 YAML인지 검사
         try:
-            data = yaml.safe_load(s)
+            data = yaml.safe_load(text)
+            if isinstance(data, list) and all(isinstance(x, dict) for x in data):
+                return text
         except Exception:
-            return False
-        if not isinstance(data, list) or not data:
-            return False
-        if not all(isinstance(x, dict) for x in data):
-            return False
-        for play in data:
-            if not any(k in play for k in ("hosts", "tasks", "roles", "name")):
-                return False
-            for k in play.keys():
-                if k not in _ALLOWED_TOP_KEYS:
-                    pass
-        return True
+            pass
 
-    if _is_valid_playbook(text):
+        # 그래도 안 되면 줄 단위로 필터링
+        keep = []
+        for ln in text.splitlines():
+            s = ln.strip()
+            if not s or s.startswith(("#","...")):
+                continue
+            if re.match(r"^(-\s+name:|hosts:|tasks:|roles:|vars:|become:)", s):
+                keep.append(ln)
+            elif ln.startswith("  "):
+                keep.append(ln)
+        cleaned = "\n".join(keep).strip() + "\n"
+
+        # 마지막 파싱 시도
+        try:
+            data = yaml.safe_load(cleaned)
+            if isinstance(data, list):
+                return cleaned
+        except Exception:
+            pass
+
+        # 최종 실패: 원문 반환
         return text
-
-    # 4) 더 강한 정제 후 재시도
-    strict_keep = []
-    for ln in text.splitlines():
-        s = ln.strip()
-        if not s:
-            strict_keep.append(ln); continue
-        if s.startswith(("#", "...")):
-            continue
-        if re.match(r"^(-\s+name:)|^(hosts:)|^(become:)|^(vars:)|^(tasks:)|^(handlers:)|^(roles:)|^(gather_facts:)|^(pre_tasks:)|^(post_tasks:)|^(vars_files:)", s):
-            strict_keep.append(ln); continue
-        if ln.startswith("  ") or ln.startswith("\t"):
-            strict_keep.append(ln); continue
-    text2 = "\n".join(strict_keep).strip() + "\n"
-    if _is_valid_playbook(text2):
-        return text2
-
-    # 5) 첫 플레이만 추출 시도
-    chunks = re.split(r"\n\s*\n", text2)
-    for ch in chunks:
-        if _is_valid_playbook(ch + "\n"):
-            return ch.strip() + "\n"
-
-    # 6) 마지막 방어: 원문 반환
-    return text
+    except Exception as e:
+        # 절대 죽지 않게
+        print(f"[sanitize_yaml error] {e}")
+        return text or ""
