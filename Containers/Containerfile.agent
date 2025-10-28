@@ -10,7 +10,7 @@ RUN mkdir -p /work && \
     chown -R agent:agent /home/agent /work && \
     chmod 700 /home/agent/.ssh
 
-ENV ANSIBLE_CONFIG=/runner/project/ansible.cfg \
+ENV ANSIBLE_CONFIG=/ansible.cfg \
     ANSIBLE_STDOUT_CALLBACK=default \
     ANSIBLE_CALLBACKS_ENABLED=    
 
