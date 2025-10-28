@@ -1,8 +1,5 @@
-## IBM 데이터 셋..다시는 사용하는가 봐라!! ㅠㅠ
-
 #!/usr/bin/env python3
 import os, re, json, uuid, shutil, pathlib, subprocess, zipfile
-import yaml
 from datetime import datetime
 from typing import List, Optional, Literal, Union, Dict, Any, Iterator
 
@@ -14,42 +11,31 @@ import ansible_runner
 
 app = FastAPI(title="llama-ansible-agent", version="0.4.0")
 
-MODEL_URL = os.getenv("MODEL_URL", "http://127.0.0.1:8080/v1")
+MODEL_URL = os.getenv("MODEL_URL", "http://127.0.0.1:8000/v1")
 API_KEY   = os.getenv("API_KEY", "sk-noauth")
 WORK_DIR  = pathlib.Path(os.getenv("WORK_DIR", "/work"))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 client = OpenAI(base_url=MODEL_URL, api_key=API_KEY)
 
-_ALLOWED_TOP_KEYS = {
-    "name", "hosts", "become", "vars", "tasks", "handlers",
-    "roles", "gather_facts", "vars_files", "pre_tasks", "post_tasks",
-}
-
 SYSTEM_PROMPT = (
     "You are an Ansible playbook generator.\n"
-    "Your only job is to output a complete, valid YAML playbook.\n"
-    "Respond strictly in raw YAML.\n"
-    "Do NOT include markdown fences, code blocks, explanations, or commentary.\n"
-    "If the user asks anything else, still respond only with YAML.\n"
-    "Use idempotent modules and proper indentation.\n"
-    "Language: YAML only.\n"
+    "- Output ONLY a valid Ansible YAML playbook.\n"
+    "- No markdown fences, no explanations.\n"
+    "- Prefer idempotent modules.\n"
 )
 
 class GenerateReq(BaseModel):
     message: str
     model: str = "local-llama"
-    # allow both "max_token" and "max_tokens" (alias)
-    max_token: int = Field(256, ge=64, le=4096, alias="max_tokens")
+    max_token: int = Field(256, ge=64, le=4096)
     temperature: float = Field(0.5, ge=0, le=1.0)
     name: Optional[str] = None
-    class Config:
-        allow_population_by_field_name = True  # accept field name & alias
 
 class RunReq(BaseModel):
     task_id: str
     inventory: Union[str, List[str]]
-    engine: Literal["runner","ansible"] = "ansible"
+    engine: Literal["runner","ansible"] = "runner"
     verify: Literal["none","syntax","all"] = "all"
     user: str = "rocky"
     ssh_key: Optional[str] = "/home/agent/.ssh/id_rsa"
@@ -221,22 +207,15 @@ def generate(req: GenerateReq):
     }
     try:
         resp = client.chat.completions.create(**payload)
-        # content 추출
         text = (resp.choices[0].message.content or "").strip()
     except Exception as e:
-        # 디버그에 도움 되도록 일부 정보 포함 (가능하면)
-        detail = f"LLM error: {e}"
-        try:
-            detail += f"; model={req.model}"
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=detail)
-
+        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
     if not text:
         raise HTTPException(status_code=422, detail="LLM returned empty content")
 
     write_file(pb_path, text)
-    preview = "\n".join(text.splitlines()[:120])
+    preview = "
+".join(text.splitlines()[:120])
     return {"task_id": run_id, "run_dir": str(run_dir), "playbook_name": pb_name, "playbook_preview": preview}
 
 @app.post("/api/v1/run")
