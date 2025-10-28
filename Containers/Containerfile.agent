@@ -5,7 +5,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends     openssh-cli
 ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 LANG=C.UTF-8
 
 RUN useradd -m -u 1000 -s /bin/bash agent
-USER agent
+RUN mkdir -p /work && \
+    mkdir -p /home/agent/.ssh && \
+    chown -R agent:agent /home/agent /work && \
+    chmod 700 /home/agent/.ssh
+
 WORKDIR /app
 
 COPY --chown=agent:agent ../requirements.txt ./requirements.txt
@@ -14,9 +18,9 @@ RUN python -m pip install -U pip &&     python -m pip install --no-cache-dir -r 
 COPY --chown=agent:agent ../prompts.py ./prompts.py
 COPY --chown=agent:agent ../agentd.py ./agentd.py
 
-RUN mkdir -p /work && mkdir -p /home/agent/.ssh && chmod 700 /home/agent/.ssh
+USER agent
 
-ENV MODEL_URL=http://127.0.0.1:8000/v1     API_KEY=sk-noauth     WORK_DIR=/work
+ENV MODEL_URL=http://127.0.0.1:8080/v1     API_KEY=sk-noauth     WORK_DIR=/work
 
 EXPOSE 8082
 ENTRYPOINT ["/usr/bin/tini","-g","--","uvicorn","agentd:app","--host","0.0.0.0","--port","8082","--proxy-headers"]

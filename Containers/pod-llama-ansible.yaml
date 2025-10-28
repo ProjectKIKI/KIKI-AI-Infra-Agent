@@ -5,21 +5,23 @@ metadata:
 spec:
   hostNetwork: true
   restartPolicy: Always
+  network:
+    - name: podman
   containers:
     - name: llama-server
       image: ghcr.io/ggerganov/llama.cpp:server
-      args: ["--model","/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf",
-             "--host","0.0.0.0","--port","8000",
+      args: ["--model","/models/data.guff",
+             "--host","0.0.0.0","--port","8080",
              "--ctx-size","4096","--n-gpu-layers","0","--embedding"]
       volumeMounts:
         - name: models
-          mountPath: /models
+          mountPath: /models/model.guff
           readOnly: true
     - name: ansible-agent
       image: localhost/llama-ansible-agent:latest
       env:
         - name: MODEL_URL
-          value: http://127.0.0.1:8000/v1
+          value: http://127.0.0.1:8080/v1
         - name: API_KEY
           value: sk-noauth
         - name: WORK_DIR
@@ -33,8 +35,8 @@ spec:
   volumes:
     - name: models
       hostPath:
-        path: /data/models
-        type: Directory
+        path: /root/models/data.guff  ## model 파일이 있는 위치(호스트 컴퓨터)
+        type: File
     - name: sshkeys
       hostPath:
         path: /root/.ssh
