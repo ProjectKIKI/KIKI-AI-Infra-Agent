@@ -223,8 +223,6 @@ def generate(req: GenerateReq):
         resp = client.chat.completions.create(**payload)
         # content 추출
         text = (resp.choices[0].message.content or "").strip()
-        # 순수 YAML만 남기기
-        text = sanitize_yaml(text)
     except Exception as e:
         # 디버그에 도움 되도록 일부 정보 포함 (가능하면)
         detail = f"LLM error: {e}"
@@ -306,55 +304,3 @@ def download_bundle(task_id: str):
     if not bundle.exists():
         return JSONResponse(status_code=404, content={"detail":"bundle not ready"})
     return FileResponse(str(bundle), filename=f"bundle-{task_id}.zip")
-
-def sanitize_yaml(text: str) -> str:
-    """
-    LLM 출력에서 순수 YAML 플레이북만 추출한다.
-    오류가 나도 절대 예외를 던지지 않는다.
-    """
-    try:
-        # 코드펜스 제거
-        text = text.strip()
-        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text, flags=re.MULTILINE)
-        text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE)
-
-        # '---' 이후부터
-        if "---" in text:
-            text = text[text.index("---"):]
-        # 기본 정리
-        text = text.replace("\r\n", "\n").strip() + "\n"
-
-        # 유효 YAML인지 검사
-        try:
-            data = yaml.safe_load(text)
-            if isinstance(data, list) and all(isinstance(x, dict) for x in data):
-                return text
-        except Exception:
-            pass
-
-        # 그래도 안 되면 줄 단위로 필터링
-        keep = []
-        for ln in text.splitlines():
-            s = ln.strip()
-            if not s or s.startswith(("#","...")):
-                continue
-            if re.match(r"^(-\s+name:|hosts:|tasks:|roles:|vars:|become:)", s):
-                keep.append(ln)
-            elif ln.startswith("  "):
-                keep.append(ln)
-        cleaned = "\n".join(keep).strip() + "\n"
-
-        # 마지막 파싱 시도
-        try:
-            data = yaml.safe_load(cleaned)
-            if isinstance(data, list):
-                return cleaned
-        except Exception:
-            pass
-
-        # 최종 실패: 원문 반환
-        return text
-    except Exception as e:
-        # 절대 죽지 않게
-        print(f"[sanitize_yaml error] {e}")
-        return text or ""
