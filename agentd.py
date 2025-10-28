@@ -11,7 +11,7 @@ import ansible_runner
 
 app = FastAPI(title="llama-ansible-agent", version="0.4.0")
 
-MODEL_URL = os.getenv("MODEL_URL", "http://127.0.0.1:8000/v1")
+MODEL_URL = os.getenv("MODEL_URL", "http://127.0.0.1:8080/v1")
 API_KEY   = os.getenv("API_KEY", "sk-noauth")
 WORK_DIR  = pathlib.Path(os.getenv("WORK_DIR", "/work"))
 WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -215,8 +215,7 @@ def generate(req: GenerateReq):
         raise HTTPException(status_code=422, detail="LLM returned empty content")
 
     write_file(pb_path, text)
-    preview = "
-".join(text.splitlines()[:120])
+    preview = "\n".join(text.splitlines()[:120])
     return {"task_id": run_id, "run_dir": str(run_dir), "playbook_name": pb_name, "playbook_preview": preview}
 
 @app.post("/api/v1/run")
