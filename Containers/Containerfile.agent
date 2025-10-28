@@ -10,10 +10,16 @@ RUN mkdir -p /work && \
     chown -R agent:agent /home/agent /work && \
     chmod 700 /home/agent/.ssh
 
+ENV ANSIBLE_CONFIG=/runner/project/ansible.cfg \
+    ANSIBLE_STDOUT_CALLBACK=default \
+    ANSIBLE_CALLBACKS_ENABLED=    
+
 WORKDIR /app
 
+COPY --chown=agent:agent ../ansible.cfg ./ansible.cfg
 COPY --chown=agent:agent ../requirements.txt ./requirements.txt
-RUN python -m pip install -U pip &&     python -m pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install -U pip && python -m pip install --no-cache-dir -r requirements.txt
+
 
 COPY --chown=agent:agent ../prompts.py ./prompts.py
 COPY --chown=agent:agent ../agentd.py ./agentd.py
