@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os, re, json, uuid, shutil, pathlib, subprocess, zipfile
-import re
 import yaml
 from datetime import datetime
 from typing import List, Optional, Literal, Union, Dict, Any, Iterator
@@ -35,18 +34,20 @@ SYSTEM_PROMPT = (
     "Language: YAML only.\n"
 )
 
-
 class GenerateReq(BaseModel):
     message: str
     model: str = "local-llama"
-    max_token: int = Field(256, ge=64, le=4096)
+    # allow both "max_token" and "max_tokens" (alias)
+    max_token: int = Field(256, ge=64, le=4096, alias="max_tokens")
     temperature: float = Field(0.5, ge=0, le=1.0)
     name: Optional[str] = None
+    class Config:
+        allow_population_by_field_name = True  # accept field name & alias
 
 class RunReq(BaseModel):
     task_id: str
     inventory: Union[str, List[str]]
-    engine: Literal["runner","ansible"] = "runner"
+    engine: Literal["runner","ansible"] = "ansible"
     verify: Literal["none","syntax","all"] = "all"
     user: str = "rocky"
     ssh_key: Optional[str] = "/home/agent/.ssh/id_rsa"
@@ -218,10 +219,19 @@ def generate(req: GenerateReq):
     }
     try:
         resp = client.chat.completions.create(**payload)
+        # content 추출
         text = (resp.choices[0].message.content or "").strip()
-        text = sanitize_yaml(raw)
+        # 순수 YAML만 남기기
+        text = sanitize_yaml(text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+        # 디버그에 도움 되도록 일부 정보 포함 (가능하면)
+        detail = f"LLM error: {e}"
+        try:
+            detail += f"; model={req.model}"
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=detail)
+
     if not text:
         raise HTTPException(status_code=422, detail="LLM returned empty content")
 
@@ -299,36 +309,35 @@ def sanitize_yaml(text: str) -> str:
     """
     LLM 출력에서 순수 YAML 플레이북만 추출한다.
     - ``` 코드펜스 제거
-    - 안내문("Please replace...", "This playbook will", 숫자목록 등) 제거
+    - 안내문/설명 제거
     - 맨 앞의 '---' 문서구분선 기준으로 본문만 취함
-    - YAML 파싱이 안 되면 일반적이 아닌 행을 제거하여 재시도
+    - YAML 파싱 실패 시, 비정형 라인 제거 후 재시도
     """
     # 0) 코드펜스 제거
-    #    ```yaml ~ ```  /  ``` ~ ```
-    text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text.strip(), flags=re.MULTILINE)
+    text = text.strip()
+    text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE)
 
-    # 1) '---' 이후만 취함 (앞의 설명/프롬프트 제거)
+    # 1) '---' 이후만 취함
     if "---" in text:
         text = text[text.index("---"):]
     else:
-        # '---'가 없으면 첫 번째 플레이 목록의 시작을 추정
         m = re.search(r"(?m)^\s*-\s*name\s*:", text)
         if m:
             text = text[m.start():]
 
-    # 2) 명백한 설명/주석성 라인 제거
+    # 2) 설명성 라인 제거
     drop_patterns = [
         r"(?i)^\s*please replace\b",
         r"(?i)^\s*this playbook will\b",
         r"(?i)^\s*note\b[:：]",
         r"(?i)^\s*instructions?:",
-        r"^\s*[-*]\s+\w+.*:.*\(.*\)",  # 리스트형 설명
-        r"^\s*\d+\.\s+.+",            # 번호목록 1. 2. ...
-        r"^\s*#+\s+.+",               # 마크다운 헤더
-        r"^\s*>\s+.+",                # 인용문
-        r"^\s*<!--.*?-->\s*$",        # HTML 주석
-        r"^\s*`{3,}.*$",              # 코드펜스
+        r"^\s*[-*]\s+\w+.*:.*\(.*\)",
+        r"^\s*\d+\.\s+.+",
+        r"^\s*#+\s+.+",
+        r"^\s*>\s+.+",
+        r"^\s*<!--.*?-->\s*$",
+        r"^\s*`{3,}.*$",
     ]
     cleaned_lines = []
     for ln in text.splitlines():
@@ -337,58 +346,48 @@ def sanitize_yaml(text: str) -> str:
         cleaned_lines.append(ln)
     text = "\n".join(cleaned_lines).strip() + "\n"
 
-    # 3) YAML 유효성 검사 (성공하면 그대로 반환)
+    # 3) YAML 유효성 검사
     def _is_valid_playbook(s: str) -> bool:
         try:
             data = yaml.safe_load(s)
         except Exception:
             return False
-        # 플레이북은 보통 list[ dict(...) ]
         if not isinstance(data, list) or not data:
             return False
         if not all(isinstance(x, dict) for x in data):
             return False
-        # 최상위 키가 너무 엉뚱한지 간단검사
         for play in data:
             if not any(k in play for k in ("hosts", "tasks", "roles", "name")):
                 return False
             for k in play.keys():
                 if k not in _ALLOWED_TOP_KEYS:
-                    # 완전 배제하진 않지만, 이상하면 표시만 해둠
                     pass
         return True
 
     if _is_valid_playbook(text):
         return text
 
-    # 4) 실패 시, YAML에 포함되기 어려운 행 더 강하게 제거 후 재시도
+    # 4) 더 강한 정제 후 재시도
     strict_keep = []
     for ln in text.splitlines():
         s = ln.strip()
         if not s:
-            strict_keep.append(ln)
-            continue
+            strict_keep.append(ln); continue
         if s.startswith(("#", "...")):
             continue
-        # YAML에 흔한 시작 토큰/키워드만 통과
         if re.match(r"^(-\s+name:)|^(hosts:)|^(become:)|^(vars:)|^(tasks:)|^(handlers:)|^(roles:)|^(gather_facts:)|^(pre_tasks:)|^(post_tasks:)|^(vars_files:)", s):
-            strict_keep.append(ln)
-            continue
-        # 들여쓰기된 하위키는 허용
+            strict_keep.append(ln); continue
         if ln.startswith("  ") or ln.startswith("\t"):
-            strict_keep.append(ln)
-            continue
-        # 그 외(설명문/문장형)는 버림
+            strict_keep.append(ln); continue
     text2 = "\n".join(strict_keep).strip() + "\n"
     if _is_valid_playbook(text2):
         return text2
 
-    # 5) 그래도 실패면 마지막 방어: 첫 번째 플레이만 추출 시도
-    #    --- 이후부터 다음 빈줄 전까지
+    # 5) 첫 플레이만 추출 시도
     chunks = re.split(r"\n\s*\n", text2)
     for ch in chunks:
         if _is_valid_playbook(ch + "\n"):
             return ch.strip() + "\n"
 
-    # 6) 최종 실패: 원문 반환(상위에서 에러로 처리되도록)
+    # 6) 마지막 방어: 원문 반환
     return text
