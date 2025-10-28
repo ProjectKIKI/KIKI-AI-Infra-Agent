@@ -1,0 +1,31 @@
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-client curl ca-certificates build-essential \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 LANG=C.UTF-8
+
+WORKDIR /app
+
+COPY requirements.txt ./ 
+
+# root 권한으로 전역 설치 (안정)
+RUN python -m pip install -U pip && \
+    python -m pip install --no-cache-dir -r requirements.txt
+
+COPY agent_openai.py prompts.py example_inventory.ini ./ 
+
+# 비루트 전환 (런타임)
+RUN useradd -m agent && chown -R agent:agent /app
+USER agent
+
+# 런타임 기본값 (Pod에서 args로 덮어써도 됨)
+ENV BASE_URL=http://127.0.0.1:8000/v1 \
+    API_KEY=sk-noauth \
+    MODEL_NAME=local-llama \
+    INVENTORY=/app/example_inventory.ini \
+    TASK="HTTPD 설치 및 index.html 배포" \
+    VERIFY=all
+
+ENTRYPOINT ["python", "agent_openai.py"]

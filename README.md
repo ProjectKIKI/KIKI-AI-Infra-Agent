@@ -70,6 +70,32 @@ python3 agent_openai.py --backend direct --k8s-file k8s/deploy.yaml --verify
 python3 agent_openai.py --backend direct --openstack-op ensure-network --openstack-args name=net-infra cidr=192.168.10.0/24 --verify
 ```
 
+### 컨테이너 이미지 빌드
+
+```bash
+# 1) 모델 폴더 준비(호스트): /data/models에 GGUF 파일 배치
+#    예) /data/models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
+
+# 2) 컨테이너 빌드
+# llama.cpp는 공인 이미지 그대로 사용한다.
+# ghcr.io/ggerganov/llama.cpp:server
+# --model /models/\<your.gguf> --ctx-size 4096 --host 0.0.0.0 --port 8000
+
+podman build -f Containers/Containerfile.agent -t localhost/llama-ansible-agent:latest .
+
+# 2) Pod 생성 & 실행 (Kube YAML)
+podman play kube Containers/pod-llama-ansible.yaml
+
+# 3) 상태 확인
+podman pod ps
+podman ps --pod
+podman logs -f --names llama-ansible-pod-ansible-agent
+podman logs -f --names llama-ansible-pod-llama-server
+
+podman pod stop llama-ansible-pod
+podman pod rm llama-ansible-pod
+```
+
 ## 향후 계획
 
 - Go 언어로 마이그레이션

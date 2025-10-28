@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: llama-ansible-pod
+  labels:
+    app: llama-ansible
+spec:
+  restartPolicy: Always
+  containers:
+    # ① llama.cpp server
+    - name: llama-server
+      image: ghcr.io/ggerganov/llama.cpp:server
+      args:
+        - --model
+        - /models/Qwen2.5-1.5B-Instruct-Q4_K_M.gguf
+        - --ctx-size
+        - "4096"
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8000"
+      ports:
+        - containerPort: 8000
+      volumeMounts:
+        - name: models
+          mountPath: /models:ro
+      livenessProbe:
+        httpGet:
+          path: /v1/models
+          port: 8000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+
+    # ② ansible agent
+    - name: ansible-agent
+      image: localhost/llama-ansible-agent:latest
+      env:
+        - name: BASE_URL
+          value: http://127.0.0.1:8000/v1
+        - name: API_KEY
+          value: sk-noauth
+        - name: MODEL_NAME
+          value: local-llama
+        - name: INVENTORY
+          value: /app/example_inventory.ini
+        - name: TASK
+          value: HTTPD 설치 및 index.html 배포
+        - name: VERIFY
+          value: all
+      # agent_openai.py 인자 (ENTRYPOINT 뒤에 들어감)
+      args:
+        - --base_url
+        - $(BASE_URL)
+        - --api_key
+        - $(API_KEY)
+        - --model
+        - $(MODEL_NAME)
+        - --inventory
+        - $(INVENTORY)
+        - --task
+        - $(TASK)
+        - --verify
+        - $(VERIFY)
+      volumeMounts:
+        - name: sshkeys
+          mountPath: /home/agent/.ssh:ro
+      # 같은 Pod 내라 127.0.0.1:8000 으로 접근 가능 (동일 네임스페이스)
+  volumes:
+    - name: models
+      hostPath:
+        path: /data/models           # 호스트의 GGUF 저장 경로
+        type: Directory
+    - name: sshkeys
+      hostPath:
+        path: /home/<YOU>/.ssh       # 호스트의 SSH 키(읽기전용) - 필요에 맞게 변경
+        type: Directory
