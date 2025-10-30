@@ -14,6 +14,13 @@
                                           Target Hosts (SSH)
 ```
 
+데이터는 가급적이면, 직접 학습한 데이터 사용을 권장 합니다. backend는 두 가지를 지원 및 제공 합니다.
+
+1. llama.cpp
+2. OpenVINO
+
+현재 기본값은 Llama.cpp으로 구성이 되어 있습니다.
+
 ## 하이라이트
 - **inventory 전달 2가지 방식** 지원
   - `--inventory /path/hosts.ini` : 컨테이너에서 보이는 경로를 직접 사용(마운트 필요)
@@ -24,7 +31,7 @@
   3) (옵션) `--check --diff`로 **idempotency** 확인
 - 모든 산출물은 컨테이너 내부 `/work/run_<id>/`에 저장, **bundle.zip** 생성
 
-- **반드시 SELinux를 끄고 진행하세요. 켜져 있으면, 올바르게 빌드 및 실행이 안될 가능성이 높습니다.
+- **반드시 SELinux**를 끄고 진행하세요. 켜져 있으면, 올바르게 빌드 및 실행이 안될 가능성이 높습니다.
 
 ```bash
 getenforce
