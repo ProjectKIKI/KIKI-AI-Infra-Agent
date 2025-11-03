@@ -6,7 +6,7 @@ spec:
   hostNetwork: true
   restartPolicy: Always
   network:
-    - name: podman
+    - name: llama
   containers:
     - name: llama-server
       image: ghcr.io/ggerganov/llama.cpp:server
@@ -15,10 +15,10 @@ spec:
              "--ctx-size","4096","--n-gpu-layers","0"]
       volumeMounts:
         - name: models
-          mountPath: /models/model.guff
+          mountPath: /models/data.guff
           readOnly: true
     - name: ansible-agent
-      image: localhost/llama-ansible-agent:latest
+      image: localhost/llama-ansible-agent:v4
       env:
         - name: MODEL_URL
           value: http://127.0.0.1:8080/v1
