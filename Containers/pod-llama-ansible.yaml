@@ -18,7 +18,7 @@ spec:
           mountPath: /models/data.guff
           readOnly: true
     - name: ansible-agent
-      image: localhost/llama-ansible-agent:v4
+      image: localhost/llama-ansible-agent:latest
       env:
         - name: MODEL_URL
           value: http://127.0.0.1:8080/v1
