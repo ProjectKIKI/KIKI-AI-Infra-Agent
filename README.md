@@ -1,4 +1,4 @@
-# llama.cpp × Ansible Runner — Daemon & CLI (v0.4)
+# llama.cpp × Ansible Runner — Daemon & CLI (v0.5)
 
 두 컨테이너(LLM 서버, Agent 데몬)를 Podman Pod로 띄우고, 호스트에서 `kiki.py`로 자연어 작업을 보내
 **플레이북 생성 → 리뷰(승인) → 실행(ansible-runner) → ZIP 번들 다운로드**까지 자동화합니다.
@@ -16,7 +16,7 @@
                                           Target Hosts (SSH)
 ```
 
-## 하이라이트
+## 릴리즈 하이라이트
 - **inventory 전달 2가지 방식** 지원
   - `--inventory /path/hosts.ini` : 컨테이너에서 보이는 경로를 직접 사용(마운트 필요)
   - `--inventory-file ./hosts.ini` : 파일 내용을 본문으로 업로드(마운트 불필요)
@@ -24,6 +24,8 @@
   1) 문법 검사 `--syntax-check`
   2) 적용
   3) (옵션) `--check --diff`로 **idempotency** 확인
+  4) 인벤토리 통합 하였습니다. 하나의 지시자로 사용 합니다.
+  5) roles/
 - 모든 산출물은 컨테이너 내부 `/work/run_<id>/`에 저장, **bundle.zip** 생성
 
 **반드시 SELinux를 끄고 진행하세요. 켜져 있으면, 올바르게 빌드 및 실행이 안될 가능성이 높습니다.
@@ -76,14 +78,18 @@ python3 kiki.py   --base-url http://127.0.0.1:8082   --model local-llama   --mes
 ### 5. kiki 명령어 옵션 정리
 
 #### 주요 옵션
-| 옵션              | 설명                               | 기본값 / 예시                     |
-| --------------- | -------------------------------- | ---------------------------- |
-| `--base-url`    | **필수.** `agentd.py` 서버의 API 주소   | `http://127.0.0.1:8082`      |
-| `--model`       | 사용할 LLM 모델 이름                    | `local-llama`                |
-| `--message`     | LLM에 전달할 명령 / 프롬프트               | `"HTTPD 설치 및 index.html 배포"` |
-| `--max-token`   | 모델이 생성할 최대 토큰 수 (64~4096)        | `256`                        |
-| `--temperature` | 모델 출력의 다양성 (0=고정적, 1=창의적)        | `0.5`                        |
-| `--name`        | 생성될 플레이북 파일 이름(기본: message에서 추출) | `"nginx-deploy"`             |
+
+| 옵션 | 설명 | 기본값 / 예시 |
+|------|------|---------------|
+| `--base-url` | **필수.** `agentd.py` 서버의 API URL | `http://127.0.0.1:8082` |
+| `--model` | 사용할 LLM 모델 이름 | `local-llama` |
+| `--message` | LLM에게 전달할 명령(프롬프트) | `"HTTPD 설치 및 index.html 배포"` |
+| `--max-token` | 생성 토큰 수 (64~4096) | `256` |
+| `--temperature` | 출력 다양성 (0~1) | `0.5` |
+| `--name` | 생성될 Playbook 파일 베이스명 | `"nginx-deploy"` |
+| `--layout` | 생성 레이아웃: `playbook` 또는 `role` | `playbook` |
+| `--role-name` | `layout=role`일 때 역할 이름 | `webapp` |
+| `--role-hosts` | `layout=role`일 때 site.yml hosts | `all` |
 
 #### 실행 관련 옵션
 
@@ -108,13 +114,20 @@ python3 kiki.py \
   --verify all
 ```
 
-#### 인벤토리 파일
+#### 인벤토리 활용 예제
 
 ```bash
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --message "모든 노드 ping" \
-  --inventory ./hosts.ini
+# CSV
+python3 kiki.py --base-url http://127.0.0.1:8082   --message "모든 노드 ping"   --inventory "node1,node2,node3"
+
+# 파일 경로
+python3 kiki.py --base-url http://127.0.0.1:8082   --message "HTTPD 설치"   --inventory ./hosts.ini
+
+# @파일 (명시적 파일내용 전송)
+python3 kiki.py --base-url http://127.0.0.1:8082   --message "Nginx 설치"   --inventory @./hosts.ini
+
+# 인라인 INI
+python3 kiki.py --base-url http://127.0.0.1:8082   --message "모든 노드 ping"   --inventory "[all]\nnode1 ansible_user=rocky\nnode2 ansible_user=rocky"
 ```
 
 #### extra-vars 전달
