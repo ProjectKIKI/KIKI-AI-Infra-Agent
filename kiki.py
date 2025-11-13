@@ -1,145 +1,265 @@
+
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+"""
+KIKI v2 - Python-based Infra Code Generator
 
-import argparse, json, os, re, sys, textwrap
-from typing import Any, Dict, List, Optional, Tuple, Union
-import requests
+Targets:
+  - ansible  : Ansible playbook skeleton
+  - openstack: Heat template skeleton
+  - k8s      : Kubernetes manifest (Deployment + Service)
 
-FENCE_ANY = re.compile(r"""^\s*(```|~~~)\s*[a-zA-Z0-9._-]*\s*\r?\n(.*?)\r?\n\s*(```|~~~)\s*$""", re.MULTILINE | re.DOTALL)
+LLM 연동은 별도 모듈에서 처리하고,
+이 파일은 "입력 파라미터 → YAML 구조"의 기본 뼈대를 제공하는 역할만 합니다.
+"""
 
-def strip_fences_strong(text: str) -> str:
-    s = str(text or "").replace("\r\n", "\n")
-    blocks = FENCE_ANY.findall(s)
-    if blocks:
-        s = "\n\n".join(b[1].strip() for b in blocks if b[1].strip())
-    s = re.sub(r"(?m)^\s*(```|~~~).*$", "", s)
-    s = s.replace("```", "").replace("~~~", "")
-    s = re.sub(r"(?im)^\s*yaml\s*$", "", s)
-    return s.strip()
+import argparse
+import os
+import sys
+import subprocess
+from pathlib import Path
+from typing import Optional
 
-def light_yaml_sanitize(text: str) -> str:
-    s = strip_fences_strong(text)
-    if "---" in s:
-        s = s[s.index("---"):]
-    return (s.strip() + "\n") if s.strip() else s.strip()
 
-def _post_json(url: str, payload: Dict[str, Any], timeout: Optional[Union[int, float]] = None) -> Dict[str, Any]:
+def debug(msg: str):
+    print(f"[kiki] {msg}", file=sys.stderr)
+
+
+# ------------------ 공통 유틸 ------------------ #
+
+def ensure_parent_dir(path: Path):
+    if path.parent and not path.parent.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def write_file(path: Path, content: str):
+    ensure_parent_dir(path)
+    path.write_text(content, encoding="utf-8")
+    debug(f"generated file: {path}")
+
+
+def which(cmd: str) -> Optional[str]:
+    """`cmd`가 PATH 상에 존재하는지 확인."""
+    from shutil import which as _which
+    return _which(cmd)
+
+
+# ------------------ 검증 함수 ------------------ #
+
+def validate_k8s(path: Path):
+    """kubectl dry-run=server 로 기본 검증 (있을 때만)."""
+    if which("kubectl") is None:
+        debug("kubectl not found, skip k8s validation.")
+        return
+
+    debug(f"validating k8s manifest via kubectl: {path}")
     try:
-        r = requests.post(url, json=payload, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except requests.HTTPError as he:
-        body = getattr(he.response, "text", "")
-        raise SystemExit(f"[HTTP {he.response.status_code}] {url}\n{body}") from he
-    except Exception as e:
-        raise SystemExit(f"[HTTP ERROR] {url}: {e}") from e
+        subprocess.run(
+            ["kubectl", "apply", "--dry-run=server", "-f", str(path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        debug("kubectl validation OK")
+    except subprocess.CalledProcessError as e:
+        print("=== kubectl validation failed ===", file=sys.stderr)
+        print(e.stdout.decode(errors="ignore"), file=sys.stderr)
+        print(e.stderr.decode(errors="ignore"), file=sys.stderr)
 
-def resolve_inventory_arg(inv: str) -> Tuple[Union[str, List[str]], Optional[str]]:
-    if not inv:
-        return [], None
-    s = inv.strip()
-    if s.startswith("@"):
-        path = s[1:].strip()
-        if not os.path.exists(path):
-            raise SystemExit(f"[ERROR] inventory file not found: {path}")
-        with open(path, "r", encoding="utf-8") as f:
-            return [], f.read()
-    if os.path.exists(s) and os.path.isfile(s):
-        with open(s, "r", encoding="utf-8") as f:
-            return [], f.read()
-    if "\n" in s or s.lstrip().startswith("["):
-        return [], s
-    if "," in s:
-        hosts = [h.strip() for h in s.split(",") if h.strip()]
-        return hosts, None
-    return [s], None
 
-def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        prog="kiki.py",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=textwrap.dedent("""KIKI Ansible Agent CLI"""),
+# ------------------ 생성 로직: Ansible ------------------ #
+
+def generate_ansible(args):
+    """
+    아주 단순한 Ansible 플레이북 스니펫 생성.
+    실제 현업에서는 LLM이 `tasks:` 영역을 채우는 용도로 사용하면 됨.
+    """
+    content = f"""---
+- name: Generated playbook by KIKI
+  hosts: {args.hosts}
+  become: true
+
+  vars:
+    app_name: {args.name}
+
+  tasks:
+    - name: Example debug
+      ansible.builtin.debug:
+        msg: "Hello from KIKI for {{ '{{ app_name }}' }}"
+"""
+    out_path = Path(args.out or "playbook-generated.yml")
+    write_file(out_path, content)
+    print(out_path)
+
+
+# ------------------ 생성 로직: OpenStack(Heat) ------------------ #
+
+def generate_openstack(args):
+    """
+    Heat 템플릿 스켈레톤 생성.
+    이후 LLM이 `resources` 및 `outputs`를 세부적으로 채우는 구조.
+    """
+    content = f"""heat_template_version: 2018-08-31
+
+description: >
+  Simple server stack generated by KIKI.
+  name={args.name}, image={args.image}, flavor={args.flavor}, network={args.network}
+
+parameters:
+  image:
+    type: string
+    default: "{args.image}"
+  flavor:
+    type: string
+    default: "{args.flavor}"
+  network:
+    type: string
+    default: "{args.network}"
+
+resources:
+  server:
+    type: OS::Nova::Server
+    properties:
+      name: "{args.name}"
+      image: {{ get_param: image }}
+      flavor: {{ get_param: flavor }}
+      networks:
+        - network: {{ get_param: network }}
+
+outputs:
+  server_name:
+    description: Name of the created server
+    value: {{ get_attr: [server, name] }}
+"""
+    out_path = Path(args.out or "heat-template-generated.yaml")
+    write_file(out_path, content)
+    print(out_path)
+
+
+# ------------------ 생성 로직: Kubernetes ------------------ #
+
+def generate_k8s(args):
+    """
+    Deployment + Service (ClusterIP) 기본 매니페스트 생성.
+    securityContext 등은 최소한만 두고, 이후 LLM이 강화하는 것을 권장.
+    """
+    ns = args.ns or "default"
+    deployment = f"""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {args.name}
+  namespace: {ns}
+spec:
+  replicas: {args.replicas}
+  selector:
+    matchLabels:
+      app: {args.name}
+  template:
+    metadata:
+      labels:
+        app: {args.name}
+    spec:
+      containers:
+      - name: {args.name}
+        image: {args.image}
+        ports:
+        - containerPort: {args.port}
+"""
+    service = f"""---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {args.name}
+  namespace: {ns}
+spec:
+  type: ClusterIP
+  selector:
+    app: {args.name}
+  ports:
+  - port: {args.port}
+    targetPort: {args.port}
+"""
+
+    all_yaml = deployment + "\n" + service + "\n"
+    out_path = Path(args.out or f"{args.name}-k8s.yaml")
+    write_file(out_path, all_yaml)
+    print(out_path)
+
+    if args.validate:
+        validate_k8s(out_path)
+
+
+# ------------------ CLI 파서 ------------------ #
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="kiki",
+        description="KIKI - AI Infra Code Generator (ansible / openstack / k8s)",
     )
-    p.add_argument("--base-url", required=True)
-    p.add_argument("--model", default="local-llama")
-    p.add_argument("--message", required=True)
-    p.add_argument("--max-token", type=int, default=256, dest="max_tokens")
-    p.add_argument("--temperature", type=float, default=0.5)
-    p.add_argument("--name", default=None)
-    p.add_argument("--layout", choices=["playbook","role"], default="playbook")
-    p.add_argument("--role-name", default=None)
-    p.add_argument("--role-hosts", default="all")
-    p.add_argument("--inventory", required=True)
-    p.add_argument("--verify", choices=["none","syntax","all"], default="all")
-    p.add_argument("--user", default="rocky")
-    p.add_argument("--ssh-key", default="/home/agent/.ssh/id_rsa", dest="ssh_key")
-    p.add_argument("--limit", default=None)
-    p.add_argument("--tags", default=None)
-    p.add_argument("--extra-vars", default=None)
-    return p
 
-def main() -> None:
-    args = build_argparser().parse_args()
-    base_url = args.base_url.rstrip("/")
-    generate_url = f"{base_url}/api/v1/generate"
-    run_url      = f"{base_url}/api/v1/run"
+    sub = parser.add_subparsers(dest="command")
 
-    gen_payload: Dict[str, Any] = {
-        "message": args.message,
-        "model": args.model,
-        "max_tokens": max(args.max_tokens, 64),
-        "temperature": args.temperature,
-        "layout": args.layout,
-        "role_name": args.role_name,
-        "role_hosts": args.role_hosts,
-    }
-    if args.name:
-        gen_payload["name"] = args.name
+    # gen 서브커맨드
+    gen = sub.add_parser("gen", help="Generate infra code")
+    gen.add_argument(
+        "-t", "--target",
+        choices=["ansible", "openstack", "k8s"],
+        default="ansible",
+        help="generation target (default: ansible)",
+    )
+    gen.add_argument("--name", "-n", default="demo", help="resource name / app name")
+    gen.add_argument("--image", default="nginx:latest", help="container or server image")
+    gen.add_argument("--port", type=int, default=80, help="service/container port")
+    gen.add_argument("--replicas", type=int, default=1, help="k8s replicas")
 
-    gen = _post_json(generate_url, gen_payload, timeout=180)
-    preview_raw = gen.get("playbook_preview", "") or ""
-    preview = light_yaml_sanitize(preview_raw)
+    # ansible 전용
+    gen.add_argument("--hosts", default="all", help="ansible hosts pattern")
 
-    print("\n===== Generated Playbook (preview) =====")
-    sys.stdout.write(preview)
-    print("========================================")
-    print(f"task_id: {gen['task_id']}")
-    print(f"entry:   {gen['run_dir']}/project/{gen['playbook_name']}")
+    # openstack 전용
+    gen.add_argument("--flavor", default="m1.small", help="OpenStack flavor name")
+    gen.add_argument("--network", default="public", help="OpenStack network name")
 
-    inventory, inline_inv = resolve_inventory_arg(args.inventory)
+    # k8s 전용
+    gen.add_argument("--ns", "--namespace", default="default", help="k8s namespace")
+    gen.add_argument(
+        "--validate",
+        action="store_true",
+        help="validate k8s manifest via kubectl dry-run (only when target=k8s)",
+    )
 
-    extra_vars = None
-    if args.extra_vars:
-        try:
-            extra_vars = json.loads(args.extra_vars)
-        except Exception as e:
-            raise SystemExit(f"[ERROR] --extra-vars JSON parse failed: {e}")
+    gen.add_argument(
+        "--out", "-o",
+        help="output path (YAML)",
+    )
 
-    run_payload: Dict[str, Any] = {
-        "task_id": gen["task_id"],
-        "inventory": inventory,
-        "inventory_file_content": inline_inv,
-        "verify": args.verify,
-        "user": args.user,
-        "ssh_key": args.ssh_key,
-        "limit": args.limit,
-        "tags": args.tags,
-        "extra_vars": extra_vars,
-    }
+    gen.set_defaults(func=cmd_gen)
+    return parser
 
-    run = _post_json(run_url, run_payload, timeout=None)
-    stdout_text = run.get("stdout", "")
-    if stdout_text:
-        print("\n===== Ansible Output =====")
-        sys.stdout.write(stdout_text)
-        sys.stdout.flush()
-        print("\n==========================")
+
+def cmd_gen(args):
+    if args.target == "ansible":
+        generate_ansible(args)
+    elif args.target == "openstack":
+        generate_openstack(args)
+    elif args.target == "k8s":
+        generate_k8s(args)
     else:
-        print("\n(서버 응답에 stdout이 비어 있습니다.)")
+        raise SystemExit(f"Unknown target: {args.target}")
 
-    print(f"\nSummary: {run.get('summary')}, rc={run.get('rc')}")
-    if "bundle" in run:
-        print(f"bundle: {run['bundle']}")
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    if hasattr(args, "func"):
+        return args.func(args)
+    else:
+        parser.print_help()
+        return 1
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
