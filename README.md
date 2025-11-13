@@ -224,9 +224,18 @@ site_webapp.yml
   --out heat/demo-stack.yaml
 ```
 
-결과: `heat/demo-stack.yaml` 에 단일 서버 스택 템플릿 생성  
-→ 실제 랩 용도에 맞게 LLM으로 `resources`/`outputs` 확장
+**결과:** 'heat/demo-stack.yaml' 에 단일 서버 스택 템플릿 생성 → 실제 랩 용도에 맞게 LLM으로 `resources`/`outputs` 확장
 
+자연어 기반으로 오픈스택 자원 생성은 아래와 같이 가능 합니다.
+
+```bash
+python3 kiki.py \
+  --base-url http://127.0.0.1:8082 \
+  --model local-llama \
+  --message "ext-net에 rocky-9 이미지를 사용하는 m1.small 서버 2대를 만드는 Heat 템플릿 만들어줘. YAML만 출력." \
+  --target openstack \
+  --name web-stack
+```
 ---
 
 ### 6-4) Kubernetes Deployment + Service 생성
@@ -244,6 +253,18 @@ site_webapp.yml
 
 결과: `k8s/web.yaml` 에 Deployment + ClusterIP Service 생성  
 `--validate`를 주면 `kubectl apply --dry-run=server` 로 기본 검증을 수행합니다.
+
+자연어 기반으로 쿠버네티스 자원 생성은 아래와 같이 가능 합니다.
+
+```bash
+python3 kiki.py \
+  --base-url http://127.0.0.1:8082 \
+  --model local-llama \
+  --message "demo 네임스페이스에 nginx 디플로이먼트 3개와 80 포트 서비스 만들어줘. YAML만 출력." \
+  --target k8s \
+  --name web-k8s
+
+```
 
 ---
 
@@ -398,18 +419,14 @@ bundle: /work/run_20251103_153022-dfa912/bundle.zip
 
 # 8. 스캐폴딩 구성 후 자연어 활용 가이드
 
-"
-스캐폴딩으로 Ansible Role 뼈대를 생성한 다음, 자연어 기반으로 tasks/handlers/vars/templates를 자동 생성하는 전체 흐름입니다.
+스캐폴딩으로 Ansible Role 뼈대를 생성한 다음, 자연어 기반으로 **tasks/handlers/vars/templates**를 자동 생성하는 전체 흐름입니다.
 
-"
 ## 1) 스캐폴딩 생성
-"
 ```bash
 ./kiki.py gen --target ansible --layout role --role-name webapp --role-hosts web --out roles
 ```
-"
-생성 결과:
-"
+
+**생성 결과:**
 ```
 roles/webapp/
  ├── tasks/main.yml
@@ -420,43 +437,34 @@ roles/webapp/
 
 site_webapp.yml
 ```
-"
 ## 2) 자연어 기반 Role 파일 생성
 
-"
 ### tasks/main.yml
-"
 ```bash
 python3 kiki.py --base-url http://127.0.0.1:8082 --model local-llama --message "webapp 역할의 tasks/main.yml을 생성해줘. Apache 설치, index.html 배포 포함." --name webapp_tasks --layout role --role-name webapp
 ```
-"
+
 ### handlers/main.yml
-"
 ```bash
 python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할의 handlers 생성. Apache reload handler 포함." --layout role --role-name webapp
 ```
-"
+
 ### vars/main.yml
-"
 ```bash
 python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할 vars 생성. server_port=80 포함." --layout role --role-name webapp
 ```
-"
+
 ### 템플릿 생성
-"
 ```bash
 python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할 templates/index.html.j2 생성. Welcome 문구 포함." --layout role --role-name webapp
 ```
-"
+
 ## 3) 역할 전체 적용
-"
 ```bash
 ansible-playbook site_webapp.yml
 ```
-"
-Runner 연동 시:
-"
+
+Runner 연동 시
 ```bash
 python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할 배포" --inventory "node1,node2" --verify all
 ```
-"
