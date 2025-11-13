@@ -1,4 +1,4 @@
-# llama.cpp × Ansible Runner — Daemon & CLI (v0.5)
+# llama.cpp × Ansible Runner — Daemon & CLI (v0.6)
 
 두 컨테이너(LLM 서버, Agent 데몬)를 Podman Pod로 띄우고, 호스트에서 `kiki.py`로 자연어 작업을 보내
 **플레이북 생성 → 리뷰(승인) → 실행(ansible-runner) → ZIP 번들 다운로드**까지 자동화합니다.
@@ -28,7 +28,17 @@
   5) roles/
 - 모든 산출물은 컨테이너 내부 `/work/run_<id>/`에 저장, **bundle.zip** 생성
 
+기존 **Python 기반 KIKI** 구조를 유지하면서, 다음 3가지 타깃을 지원하도록 확장한 버전입니다.
+
+- `ansible`  : Ansible 플레이북 YAML 스니펫 생성 (기본값)
+- `openstack`: Heat 템플릿 YAML 스니펫 생성
+- `k8s`      : Kubernetes Deployment + Service 매니페스트 생성
+
+LLM은 이 스켈레톤이 만들어낸 YAML을 기반으로 **세부 필드, 태스크, 정책**을 채우는 역할을 담당하는 구조로 설계되어 있습니다.
+
+
 **반드시 SELinux를 끄고** 진행하세요. 켜져 있으면, 올바르게 빌드 및 실행이 안될 가능성이 높습니다.
+
 
 
 ## 주요 구성
@@ -113,6 +123,54 @@ python3 kiki.py \
   --inventory "node1,node2,node3" \
   --verify all
 ```
+
+##### 1) Ansible 플레이북 생성 (기본)
+
+```bash
+./kiki.py gen \
+  --target ansible \
+  --name web-app \
+  --hosts webservers \
+  --out playbooks/web-app.yml
+```
+
+결과: `playbooks/web-app.yml` 에 기본 플레이북 스니펫 생성  
+→ 이후 LLM이 `tasks:` 부분을 채우도록 연동
+
+---
+
+##### 2) OpenStack Heat 템플릿 생성
+
+```bash
+./kiki.py gen -t openstack \
+  --name demo-server \
+  --image rocky-9-generic \
+  --flavor m1.small \
+  --network ext-net \
+  --out heat/demo-stack.yaml
+```
+
+결과: `heat/demo-stack.yaml` 에 단일 서버 스택 템플릿 생성  
+→ 실제 랩 용도에 맞게 LLM으로 `resources`/`outputs` 확장
+
+---
+
+##### 3) Kubernetes Deployment + Service 생성
+
+```bash
+./kiki.py gen -t k8s \
+  --name web \
+  --image nginx:1.27 \
+  --port 80 \
+  --replicas 3 \
+  --ns demo \
+  --out k8s/web.yaml \
+  --validate   # kubectl 적용 전 서버사이드 검증
+```
+
+결과: `k8s/web.yaml` 에 Deployment + ClusterIP Service 생성  
+`--validate`를 주면 `kubectl apply --dry-run=server` 로 기본 검증을 수행합니다.
+
 
 #### 인벤토리 활용 예제
 
