@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends     openssh-client curl ca-certificates build-essential git tini jq  && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-client curl ca-certificates build-essential git tini jq  && rm -rf /var/lib/apt/lists/*
 
 ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1 LANG=C.UTF-8
 
@@ -11,21 +11,23 @@ RUN mkdir -p /work && \
     chmod 700 /home/agent/.ssh
 
 ENV ANSIBLE_CONFIG=/ansible.cfg \
-    ANSIBLE_STDOUT_CALLBACK=default 
+    ANSIBLE_STDOUT_CALLBACK=default \
+    KIKI_UPSTREAM_LLM_BASE_URL=http://127.0.0.1:8080 \
+    KIKI_SYSTEM_PROMPT_FILE=/app/prompts.yaml \
+    KIKI_LLM_MODEL=local-llama
 
 WORKDIR /app
 
-COPY --chown=agent:agent ../ansible.cfg ./ansible.cfg
-COPY --chown=agent:agent ../requirements.txt ./requirements.txt
+COPY --chown=agent:agent Containers/ansible.cfg ./ansible.cfg
+COPY --chown=agent:agent Containers/requirements.txt ./requirements.txt
 RUN python -m pip install -U pip && python -m pip install --no-cache-dir -r requirements.txt
 
-
-COPY --chown=agent:agent ../prompts.py ./prompts.py
-COPY --chown=agent:agent ../agentd.py ./agentd.py
+COPY --chown=agent:agent Containers/kiki-agentd.py ./kiki-agentd.py
+COPY --chown=agent:agent Containers/prompts.yaml ./prompts.yaml
 
 USER agent
 
-ENV MODEL_URL=http://127.0.0.1:8080/v1     API_KEY=sk-noauth     WORK_DIR=/work
+ENV MODEL_URL=http://127.0.0.1:8080/v1 API_KEY=sk-noauth WORK_DIR=/work
 
 EXPOSE 8082
 ENTRYPOINT ["/usr/bin/tini","-g","--","uvicorn","agentd:app","--host","0.0.0.0","--port","8082","--proxy-headers"]

@@ -70,22 +70,48 @@ LLM은 이 스켈레톤이 만들어낸 YAML 및 Role 구조를 기반으로 **�
 ## 실행 절차
 
 ### 1. 이미지 빌드
+
+#### buildah
+
+Podman, Docker를 사용하는 경우, 올바르게 이미지 빌드가 안될 수 있습니다. 아래와 같이 진행 합니다.
+
 ```bash
-buildah bud -t localhost/llama-ansible-agent:latest -f Containers/Containerfile.agent
-podman build -t localhost/llama-ansible-agent:latest -f Containers/Containerfile.agent
-podman images
+dnf install -y container-tools 
+buildah bud -t localhost/kiki-ai-infra-agent:latest -f Containers/Containerfile.agent
+buildah images
 ```
 
 ### 2. 컨테이너 실행
+
+llm, agent는 POD로 같이 동작 합니다. 아래와 같이 YAML파일 기반으로 생성합니다. 독립적으로 사용하는 경우 podman으로 실행 및 테스트 합니다.
+
+
+#### LLM 실행
 ```bash
 podman run --rm -it \
   -p 8082:8082 \
   -e MODEL_URL=http://host.containers.internal:8080/v1 \
   -e API_KEY=sk-noauth \
   -e WORK_DIR=/work \
-  --name kiki-agent kiki-agent
+  --name kiki-agent kiki-agent \
+  ghcr.io/ggerganov/llama.cpp:server
+```
 
-podman kube play Containers/pod-llama-ansible.yaml --network podman
+#### AGENT 실행
+```bash
+podman run --rm -it \
+  -p 8082:8082 \
+  -e MODEL_URL=http://host.containers.internal:8080/v1 \
+  -e API_KEY=sk-noauth \
+  -e WORK_DIR=/work \
+  --name kiki-agent kiki-agent \
+  localhost/llama-infra-agent:latest
+```
+
+#### POD YAML으로 실행
+
+```bash
+podman kube play Containers/pod-kiki-ai-infra-agent.yaml --network podman
 podman pod ls
 ```
 
@@ -96,7 +122,62 @@ curl -s http://127.0.0.1:8080/v1/chat/completions \
   -d '{"model":"local-llama","messages":[{"role":"user","content":"say ok"}]}'
 ```
 
-### 4. Playbook 생성 및 실행 (자연어 기반)
+### 4. 사용 방법
+
+먼저 자연어 대화를 지원 합니다. 다만, CPU모델에서는 CPU코어 개수가 8개 이상이 아닌 경우, 권장하지 않습니다. llama.cpp기준 avx2, ssse3이상 지원하지 않는 경우, 올바르게 동작이 되지 않을 수 있습니다.
+
+1. 자연어 대화
+
+에이전트에 다음과 같이 자연어 대화가 가능 합니다.
+
+```bash
+kiki chat --system "You are a Kubernetes expert" "HPA 설정 설명해줘"
+kiki chat "nginx ingress 설정 방법 알려줘"
+```
+
+2. 앤서블 플레이북 생성
+
+앤서블 플레이북 생성은 다음과 같이 가능 합니다. 에이전트 모델에 따라서 주석을 생성 합니다. 해당 문제가 발생하면, --verify 옵션을 끄고 진행하세요.
+
+```bash
+kiki ansible-ai "HTTPD 설치 및 index.html 배포" \
+  --target ansible \
+  --base-url http://127.0.0.1:8082 \
+  --model local-llama \
+  --inventory "node1,node2,node3" \
+  --verify all \
+  --out playbooks/httpd.yml \
+  --confirm
+```
+
+3. 쿠버네티스 자원 생성
+
+쿠버네티스 자원은 두 가지 방식으로 생성이 가능 합니다.
+
+- 앤서블 플레이북 자원 생성
+- NATIVE YAML으로 자원 생성
+
+상황에 따라서 앤서블 혹은 NATIVE YAML 기반으로 생성 및 구성 합니다. 
+
+```bash
+kiki k8s-yaml "demo 네임스페이스 생성. 이미지 nginx를 사용해서 pod 두개 생성. 서비스는 NodePort로 구성." \
+  --base-url http://127.0.0.1:8082  \
+  --model local-llama \
+  --verify syntax  \
+  --out k8s/demo-nginx.yaml \
+  --confirm
+```
+
+4. 오픈스택 자원 생성
+
+오픈스택 자원은 두 가지 방식으로 생성이 가능 합니다.
+
+- 앤서블 플레이북 자원 생성
+- NATIVE YAML으로 자원 생성
+
+상황에 따라서 앤서블 혹은 NATIVE YAML 기반으로 생성 및 구성 합니다. 
+
+
 ```bash
 python3 kiki.py \
   --base-url http://127.0.0.1:8082 \
@@ -111,6 +192,26 @@ python3 kiki.py \
 ## 5. kiki 명령어 옵션 정리 (자연어 실행 모드)
 
 ### 주요 옵션
+
+1. 대상 설정
+
+타겟 설정은 다음과 같이 가능하다.
+
+| target  | 설명                         |
+| ------- | -------------------------- |
+| ansible-ai | 일반 Ansible 플레이북            |
+| ansible-k8s     | kubernetes.core 기반 Ansible |
+| ansible-osp     | openstack.cloud 기반 Ansible |
+| k8s-yaml    | Heat 템플릿 YAML              |
+| heat-yaml    | Heat 템플릿 YAML              |
+
+```bash
+kiki --target ansible-{ai/k8s/osp}
+kiki --target k8s-yaml
+kiki --target heat-yaml
+```
+
+2. 기본 옵션 설정
 
 | 옵션 | 설명 | 기본값 / 예시 |
 |------|------|---------------|
@@ -137,19 +238,9 @@ python3 kiki.py \
 | `--tags`           | 태그 기반 실행 (`--tags install,deploy`)                                                | 없음                        |
 | `--extra-vars`     | 추가 변수(JSON 문자열 형태)                                                                | `'{"package":"nginx"}'`   |
 
-### 기본 실행
-
-```bash
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --message "모든 노드에 HTTPD 설치 및 index.html 배포" \
-  --inventory "node1,node2,node3" \
-  --verify all
-```
-
 ---
 
-## 6. `kiki gen` 서브커맨드 (Infra 코드/스캐폴딩 생성)
+## 6. kiki 명령어 사용
 
 자연어 기반 실행과 별개로, **로컬에서 바로 사용할 수 있는 인프라 코드 스니펫/스캐폴딩**을 생성하기 위해 `gen` 서브커맨드를 제공합니다.
 
