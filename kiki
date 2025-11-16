@@ -220,7 +220,7 @@ def call_llm_chat(
 # ─────────────────────────────────────────────
 
 def cmd_chat(args: argparse.Namespace) -> None:
-    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8000")
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
     model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
     api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
     debug_enabled = args.debug
@@ -312,7 +312,7 @@ def cmd_ansible_ai(args: argparse.Namespace) -> None:
     inventory = args.inventory
     debug_enabled = args.debug
 
-    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8000")
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
     model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
     api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
 
@@ -585,7 +585,7 @@ def cmd_gen_heat(args: argparse.Namespace) -> None:
 def add_llm_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--base-url",
-        help="LLM 서버 base URL (기본: env KIKI_LLM_BASE_URL 또는 http://127.0.0.1:8000)",
+        help="LLM 서버 base URL (기본: env KIKI_LLM_BASE_URL 또는 http://127.0.0.1:8082)",
     )
     p.add_argument(
         "--model",

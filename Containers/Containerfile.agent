@@ -18,16 +18,16 @@ ENV ANSIBLE_CONFIG=/ansible.cfg \
 
 WORKDIR /app
 
-COPY --chown=agent:agent Containers/ansible.cfg ./ansible.cfg
-COPY --chown=agent:agent Containers/requirements.txt ./requirements.txt
+COPY --chown=agent:agent ansible.cfg ./ansible.cfg
+COPY --chown=agent:agent requirements.txt ./requirements.txt
 RUN python -m pip install -U pip && python -m pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=agent:agent Containers/kiki-agentd.py ./kiki-agentd.py
-COPY --chown=agent:agent Containers/prompts.yaml ./prompts.yaml
+COPY --chown=agent:agent kiki-agentd.py ./kiki_agentd.py
+COPY --chown=agent:agent prompts.yaml ./prompts.yaml
 
 USER agent
 
 ENV MODEL_URL=http://127.0.0.1:8080/v1 API_KEY=sk-noauth WORK_DIR=/work
 
 EXPOSE 8082
-ENTRYPOINT ["/usr/bin/tini","-g","--","uvicorn","agentd:app","--host","0.0.0.0","--port","8082","--proxy-headers"]
+ENTRYPOINT ["/usr/bin/tini","-g","--","uvicorn","kiki_agentd:app","--host","0.0.0.0","--port","8082","--proxy-headers"]

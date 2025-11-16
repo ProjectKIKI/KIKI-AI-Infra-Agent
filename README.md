@@ -1,9 +1,21 @@
 # llama.cpp × Ansible Runner — Daemon & CLI (v0.6)
 
-두 컨테이너(LLM 서버, Agent 데몬)를 Podman Pod로 띄우고, 호스트에서 `kiki.py`로 자연어 작업을 보내
-**플레이북 생성 → 리뷰(승인) → 실행(ansible-runner) → ZIP 번들 다운로드**까지 자동화합니다.
+이 문서는 llama.cpp 기반 LLM 서버와 Ansible Runner를 연동하는 **KIKI AI Infra Agent v0.6** 사용 방법 입니다.
 
-아직 개발중 입니다!! 완성 제품이 아닙니다.
+---
+
+## 1. 프로젝트 개요
+
+이 프로젝트는 **로컬 LLM(예: llama.cpp)**과 **Ansible Runner** 기반으로 구성되어 있습니다.
+
+주요 목적은 아래와 같습니다.
+- 자연어 → Ansible / Kubernetes / OpenStack YAML 생성
+- 문법 검사 → 실행 → idempotency 체크
+- 실행 로그 및 bundle.zip 생성
+
+위의 기능을 자동화하는 **AI 기반 인프라 자동화 환경**입니다.
+
+두 개의 컨테이너(LLM 서버 + Agent Daemon)를 Podman Pod로 실행하며, CLI 프로그램인 kiki로 자연어 작업을 보냅니다.
 
 ```
 +----------------------------+           +-----------------------------+
@@ -11,137 +23,117 @@
 |   :8000 /v1 (OpenAI compat)| <-------> |   :8082 /api/v1/*          |
 +----------------------------+           +-----------------------------+
                                                  |
-                                                 | ansible-runner / ansible
+                                                 | ansible-runner/playbook
                                                  v
                                           Target Hosts (SSH)
 ```
 
-## 릴리즈 하이라이트
-- **inventory 전달 2가지 방식** 지원
-  - `--inventory /path/hosts.ini` : 컨테이너에서 보이는 경로를 직접 사용(마운트 필요)
-  - `--inventory-file ./hosts.ini` : 파일 내용을 본문으로 업로드(마운트 불필요)
-- 실행 단계
-  1) 문법 검사 `--syntax-check`
-  2) 적용
-  3) (옵션) `--check --diff`로 **idempotency** 확인
-  4) 인벤토리 통합 하였습니다. 하나의 지시자로 사용 합니다.
-  5) roles/
-- 모든 산출물은 컨테이너 내부 `/work/run_<id>/`에 저장, **bundle.zip** 생성
+---
+
+## 2. 주요 특징 (v0.6)
+
+### 🔹 실행 검증 사이클
+1. syntax-check  
+2. apply  
+3. idempotency (--check --diff)
+
+### 🔹 주요 기능
+- 자연어 기반 YAML 생성 (Ansible / Kubernetes / OpenStack)
+- Ansible Role 스캐폴딩(layout=role)
+- bundle.zip 자동 생성
+- 한글/특수문자 파일명 slugify
+- 코드펜스/주석 자동 제거
+
+> ⚠️ 반드시 SELinux 비활성화 필요  
+> ⚠️ (컨테이너 빌드 및 볼륨 접근 문제 발생 가능)
 
 ---
 
-## KIKI Infra Generator 확장 (Ansible / OpenStack / Kubernetes)
-
-기존 **Python 기반 KIKI** 구조를 유지하면서, 다음 3가지 타깃을 지원하도록 확장한 버전입니다.
-
-- `ansible`  : Ansible 플레이북 YAML 스니펫 생성 (기본값), 또는 **Role 스캐폴딩(layout=role)** 생성
-- `openstack`: Heat 템플릿 YAML 스니펫 생성
-- `k8s`      : Kubernetes Deployment + Service 매니페스트 생성
-
-LLM은 이 스켈레톤이 만들어낸 YAML 및 Role 구조를 기반으로 **세부 필드, 태스크, 정책**을 채우는 역할을 담당하는 구조로 설계되어 있습니다.
-
-**반드시 SELinux를 끄고** 진행하세요. 켜져 있으면, 올바르게 빌드 및 실행이 안될 가능성이 높습니다.
-
-
-
-## 주요 구성
+## 3. 구성 요소
 
 | 구성 요소 | 설명 |
-|------------|------|
-| **agentd.py** | FastAPI 기반 LLM-Playbook 중개 서버 |
-| **kiki.py** | CLI 클라이언트 — 자연어 작업 전송 및 `gen` 서브커맨드 기반 인프라 코드 생성 |
-| **Containerfile** | Podman/Docker 기반 컨테이너 배포 정의 |
-| **requirements.txt** | Python 패키지 종속성 목록 |
-| **ansible.cfg** | 최소 설정 파일 (콜백/색상 등) |
+|----------|------|
+| `agentd.py` | FastAPI 기반 LLM 중계 서버 |
+| `kiki.py` | CLI 클라이언트 |
+| `Containers/Containerfile.agent` | Agent 컨테이너 |
+| `Containers/pod-kiki-ai-infra-agent.yaml` | Podman Pod 구성 |
+| `requirements.txt` | Python 패키지 목록 |
+| `ansible.cfg` | 최소 Ansible 설정 |
 
 ---
 
-## 주요 기능
-- LLM으로부터 **순수 YAML 형식의 Ansible Playbook** 자동 생성
-- `ansible-playbook` 직접 실행 (Runner 지원)
-- `syntax → apply → idempotency` 3단계 검증
-- 실행 결과 콘솔 실시간 출력 및 zip 번들 생성
-- ```yaml``` 코드펜스/설명문 제거 자동화
-- 파일명 한글/특수문자 자동 변환 (slugify)
-- **`kiki gen` 서브커맨드**를 통한 Ansible / OpenStack / Kubernetes 스니펫 및 **Ansible Role 스캐폴딩** 자동 생성
+## 4. 빌드 및 실행
 
----
-
-## 실행 절차
-
-### 1. 이미지 빌드
-
-#### buildah
-
-Podman, Docker를 사용하는 경우, 올바르게 이미지 빌드가 안될 수 있습니다. 아래와 같이 진행 합니다.
+### 4.1 Buildah로 빌드
 
 ```bash
-dnf install -y container-tools 
+dnf install -y container-tools
 buildah bud -t localhost/kiki-ai-infra-agent:latest -f Containers/Containerfile.agent
-buildah images
 ```
 
-### 2. 컨테이너 실행
+---
 
-llm, agent는 POD로 같이 동작 합니다. 아래와 같이 YAML파일 기반으로 생성합니다. 독립적으로 사용하는 경우 podman으로 실행 및 테스트 합니다.
+### 4.2 LLM 서버 실행
 
+```bash
+podman run --rm -it \
+  -p 8080:8080 \
+  ghcr.io/ggerganov/llama.cpp:server \
+    --model /models/data.gguf \
+    --ctx-size 4096 \
+    --n-gpu-layers 0 \
+    --host 127.0.0.1
+```
 
-#### LLM 실행
+---
+
+### 4.3 Agent Daemon 실행
+
 ```bash
 podman run --rm -it \
   -p 8082:8082 \
-  -e MODEL_URL=http://host.containers.internal:8080/v1 \
+  -e MODEL_URL=http://127.0.0.1:8082/v1 \
   -e API_KEY=sk-noauth \
   -e WORK_DIR=/work \
-  --name kiki-agent kiki-agent \
-  ghcr.io/ggerganov/llama.cpp:server
+  localhost/kiki-ai-infra-agent:latest
 ```
 
-#### AGENT 실행
-```bash
-podman run --rm -it \
-  -p 8082:8082 \
-  -e MODEL_URL=http://host.containers.internal:8080/v1 \
-  -e API_KEY=sk-noauth \
-  -e WORK_DIR=/work \
-  --name kiki-agent kiki-agent \
-  localhost/llama-infra-agent:latest
-```
+---
 
-#### POD YAML으로 실행
+### 4.4 Podman Pod로 실행
 
 ```bash
 podman kube play Containers/pod-kiki-ai-infra-agent.yaml --network podman
-podman pod ls
+podman pod logs -f kiki-ai-infra-agent
 ```
 
-### 3. LLM 연결 확인
+---
+
+## 5. LLM 연결 테스트
+
 ```bash
-curl -s http://127.0.0.1:8080/v1/chat/completions \
+curl -s http://127.0.0.1:8082/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"local-llama","messages":[{"role":"user","content":"say ok"}]}'
 ```
 
-### 4. 사용 방법
+---
 
-먼저 자연어 대화를 지원 합니다. 다만, CPU모델에서는 CPU코어 개수가 8개 이상이 아닌 경우, 권장하지 않습니다. llama.cpp기준 avx2, ssse3이상 지원하지 않는 경우, 올바르게 동작이 되지 않을 수 있습니다.
+## 6. CLI 사용법
 
-1. 자연어 대화
-
-에이전트에 다음과 같이 자연어 대화가 가능 합니다.
+### 6.1 자연어 대화
 
 ```bash
-kiki chat --system "You are a Kubernetes expert" "HPA 설정 설명해줘"
-kiki chat "nginx ingress 설정 방법 알려줘"
+kiki chat --system "You are a Kubernetes expert" "HPA 설정 알려줘"
+kiki chat "nginx ingress 설정 방법"
 ```
 
-2. 앤서블 플레이북 생성
+---
 
-앤서블 플레이북 생성은 다음과 같이 가능 합니다. 에이전트 모델에 따라서 주석을 생성 합니다. 해당 문제가 발생하면, --verify 옵션을 끄고 진행하세요.
+### 6.2 자연어 → Ansible Playbook 생성
 
 ```bash
 kiki ansible-ai "HTTPD 설치 및 index.html 배포" \
-  --target ansible \
   --base-url http://127.0.0.1:8082 \
   --model local-llama \
   --inventory "node1,node2,node3" \
@@ -150,122 +142,50 @@ kiki ansible-ai "HTTPD 설치 및 index.html 배포" \
   --confirm
 ```
 
-3. 쿠버네티스 자원 생성
+---
 
-쿠버네티스 자원은 두 가지 방식으로 생성이 가능 합니다.
-
-- 앤서블 플레이북 자원 생성
-- NATIVE YAML으로 자원 생성
-
-상황에 따라서 앤서블 혹은 NATIVE YAML 기반으로 생성 및 구성 합니다. 
+### 6.3 자연어 → Kubernetes YAML
 
 ```bash
-kiki k8s-yaml "demo 네임스페이스 생성. 이미지 nginx를 사용해서 pod 두개 생성. 서비스는 NodePort로 구성." \
-  --base-url http://127.0.0.1:8082  \
+kiki k8s-yaml "demo 네임스페이스 생성 후 nginx pod 2개 + NodePort 서비스" \
+  --base-url http://127.0.0.1:8082 \
   --model local-llama \
-  --verify syntax  \
+  --verify syntax \
   --out k8s/demo-nginx.yaml \
   --confirm
 ```
 
-4. 오픈스택 자원 생성
+---
 
-오픈스택 자원은 두 가지 방식으로 생성이 가능 합니다.
-
-- 앤서블 플레이북 자원 생성
-- NATIVE YAML으로 자원 생성
-
-상황에 따라서 앤서블 혹은 NATIVE YAML 기반으로 생성 및 구성 합니다. 
-
+### 6.4 자연어 → Heat(OpenStack) YAML
 
 ```bash
-python3 kiki.py \
+kiki heat-yaml "ext-net에 rocky-9 기반 m1.small 서버 2대 생성" \
   --base-url http://127.0.0.1:8082 \
   --model local-llama \
-  --message "HTTPD 설치 및 index.html 배포" \
-  --inventory "node1,node2,node3" \
-  --verify all
+  --out heat/web-stack.yaml
 ```
 
 ---
 
-## 5. kiki 명령어 옵션 정리 (자연어 실행 모드)
+## 7. 스캐폴딩 생성 (`kiki gen`)
 
-### 주요 옵션
-
-1. 대상 설정
-
-타겟 설정은 다음과 같이 가능하다.
-
-| target  | 설명                         |
-| ------- | -------------------------- |
-| ansible-ai | 일반 Ansible 플레이북            |
-| ansible-k8s     | kubernetes.core 기반 Ansible |
-| ansible-osp     | openstack.cloud 기반 Ansible |
-| k8s-yaml    | Heat 템플릿 YAML              |
-| heat-yaml    | Heat 템플릿 YAML              |
+### 7.1 Ansible Playbook 스니펫
 
 ```bash
-kiki --target ansible-{ai/k8s/osp}
-kiki --target k8s-yaml
-kiki --target heat-yaml
-```
-
-2. 기본 옵션 설정
-
-| 옵션 | 설명 | 기본값 / 예시 |
-|------|------|---------------|
-| `--base-url` | **필수.** `agentd.py` 서버의 API URL | `http://127.0.0.1:8082` |
-| `--model` | 사용할 LLM 모델 이름 | `local-llama` |
-| `--message` | LLM에게 전달할 명령(프롬프트) | `"HTTPD 설치 및 index.html 배포"` |
-| `--max-token` | 생성 토큰 수 (64~4096) | `256` |
-| `--temperature` | 출력 다양성 (0~1) | `0.5` |
-| `--name` | 생성될 Playbook 파일 베이스명 | `"nginx-deploy"` |
-| `--layout` | 생성 레이아웃: `playbook` 또는 `role` | `playbook` |
-| `--role-name` | `layout=role`일 때 역할 이름 | `webapp` |
-| `--role-hosts` | `layout=role`일 때 site.yml hosts | `all` |
-
-### 실행 관련 옵션
-
-| 옵션                 | 설명                                                                                | 기본값 / 예시                  |
-| ------------------ | --------------------------------------------------------------------------------- | ------------------------- |
-| `--inventory`      | 인벤토리 파일 경로 **또는** CSV(`node1,node2,node3`)                                        | `"node1,node2,node3"`     |
-| `--inventory-file` | 인벤토리 내용을 파일로 직접 전달                                                                | `./hosts.ini`             |
-| `--verify`         | 실행 검증 단계 지정  <br>• `none` 단순 실행<br>• `syntax` 문법만 검증<br>• `all` 문법→실행→idempotency | `all`                     |
-| `--user`           | 원격 접속 사용자                                                                         | `rocky`                   |
-| `--ssh-key`        | SSH 개인키 경로                                                                        | `/home/agent/.ssh/id_rsa` |
-| `--limit`          | 특정 호스트만 실행 (`--limit node1`)                                                      | 없음                        |
-| `--tags`           | 태그 기반 실행 (`--tags install,deploy`)                                                | 없음                        |
-| `--extra-vars`     | 추가 변수(JSON 문자열 형태)                                                                | `'{"package":"nginx"}'`   |
-
----
-
-## 6. kiki 명령어 사용
-
-자연어 기반 실행과 별개로, **로컬에서 바로 사용할 수 있는 인프라 코드 스니펫/스캐폴딩**을 생성하기 위해 `gen` 서브커맨드를 제공합니다.
-
-> 주의: 아래 사용 예시는 이 리포지토리에서 제공하는 `kiki.py`의 `gen` 서브커맨드 기준입니다.  
-> 자연어 실행 옵션(`--base-url`, `--message` 등)과 병행 사용 가능합니다.
-
-### 6-1) Ansible 플레이북 생성 (기본)
-
-```bash
-./kiki.py gen \
+kiki gen \
   --target ansible \
   --name web-app \
   --hosts webservers \
   --out playbooks/web-app.yml
 ```
 
-결과: `playbooks/web-app.yml` 에 기본 플레이북 스니펫 생성  
-→ 이후 LLM이 `tasks:` 부분을 채우도록 연동
-
 ---
 
-### 6-2) Ansible Role 스캐폴딩 생성 (layout=role)
+### 7.2 Ansible Role 스캐폴딩
 
 ```bash
-./kiki.py gen \
+kiki gen \
   --target ansible \
   --layout role \
   --role-name webapp \
@@ -273,9 +193,9 @@ kiki --target heat-yaml
   --out roles
 ```
 
-결과:
+생성 구조:
 
-```text
+```
 roles/webapp/
  ├── tasks/main.yml
  ├── handlers/main.yml
@@ -286,166 +206,90 @@ roles/webapp/
 site_webapp.yml
 ```
 
-- `roles/webapp/` 이하에 기본 Role 골격이 생성됩니다.
-- `site_webapp.yml` 은 아래와 같이 자동 생성됩니다:
-
-```yaml
----
-- name: "Site playbook for role webapp"
-  hosts: web
-  become: true
-
-  roles:
-    - webapp
-```
-
-이 구조 위에 LLM을 이용해 `tasks/main.yml`, `handlers/main.yml`, `vars/main.yml` 등을 채우면,  
-**표준 Ansible Role 구조 + 자연어 기반 코드 생성**을 동시에 활용할 수 있습니다.
-
 ---
 
-### 6-3) OpenStack Heat 템플릿 생성
+### 7.3 Heat 스니펫
 
 ```bash
-./kiki.py gen -t openstack \
-  --name demo-server \
-  --image rocky-9-generic \
+kiki gen -t openstack \
+  --name demo \
+  --image rocky-9 \
   --flavor m1.small \
   --network ext-net \
-  --out heat/demo-stack.yaml
+  --out heat/demo.yaml
 ```
 
-**결과:** 'heat/demo-stack.yaml' 에 단일 서버 스택 템플릿 생성 → 실제 랩 용도에 맞게 LLM으로 `resources`/`outputs` 확장
-
-자연어 기반으로 오픈스택 자원 생성은 아래와 같이 가능 합니다.
-
-```bash
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --model local-llama \
-  --message "ext-net에 rocky-9 이미지를 사용하는 m1.small 서버 2대를 만드는 Heat 템플릿 만들어줘. YAML만 출력." \
-  --target openstack \
-  --name web-stack
-```
 ---
 
-### 6-4) Kubernetes Deployment + Service 생성
+### 7.4 Kubernetes Deployment + Service
 
 ```bash
-./kiki.py gen -t k8s \
+kiki gen -t k8s \
   --name web \
   --image nginx:1.27 \
   --port 80 \
   --replicas 3 \
   --ns demo \
   --out k8s/web.yaml \
-  --validate   # kubectl 적용 전 서버사이드 검증
-```
-
-결과: `k8s/web.yaml` 에 Deployment + ClusterIP Service 생성  
-`--validate`를 주면 `kubectl apply --dry-run=server` 로 기본 검증을 수행합니다.
-
-자연어 기반으로 쿠버네티스 자원 생성은 아래와 같이 가능 합니다.
-
-```bash
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --model local-llama \
-  --message "demo 네임스페이스에 nginx 디플로이먼트 3개와 80 포트 서비스 만들어줘. YAML만 출력." \
-  --target k8s \
-  --name web-k8s
-
+  --validate
 ```
 
 ---
 
-## 7. 인벤토리 및 자연어 기반 작성 예시
+## 8. Inventory 사용 예시
+
+### CSV:
 
 ```bash
-# CSV
-python3 kiki.py --base-url http://127.0.0.1:8082 \
-  --message "모든 노드 ping" \
-  --inventory "node1,node2,node3"
-
-# 파일 경로
-python3 kiki.py --base-url http://127.0.0.1:8082 \
-  --message "HTTPD 설치" \
-  --inventory ./hosts.ini
-
-# @파일 (명시적 파일내용 전송)
-python3 kiki.py --base-url http://127.0.0.1:8082 \
-  --message "Nginx 설치" \
-  --inventory @./hosts.ini
-
-# 인라인 INI
-python3 kiki.py --base-url http://127.0.0.1:8082 \
-  --message "모든 노드 ping" \
-  --inventory "[all]\nnode1 ansible_user=rocky\nnode2 ansible_user=rocky"
+--inventory "node1,node2,node3"
 ```
 
-### extra-vars 전달
+### 파일 경로:
 
 ```bash
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --message "Nginx 설치 및 index.html 생성" \
-  --inventory "node1,node2,node3" \
-  --extra-vars '{"page_title": "Dustbox", "listen_port": 8080}'
+--inventory ./hosts.ini
 ```
 
-### 검증 및 특정 노드 실행
+### 인라인 INI:
 
 ```bash
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --message "rsyslog 설치 및 서비스 활성화" \
-  --inventory "node1,node2" \
-  --verify syntax
-
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --message "방화벽 설정 변경" \
-  --inventory "node1,node2,node3" \
-  --limit node2
+--inventory "[all]\nnode1 ansible_user=rocky\nnode2 ansible_user=rocky"
 ```
 
 ---
 
-## 콜백 관련 오류 해결
+## 9. extra-vars 전달
 
-Ansible 2.16+ 환경에서 `callbacks_enabled` 또는 `ANSIBLE_CALLBACKS_ENABLED=` 이 비어 있으면 오류 발생:
-
-```text
-[ERROR]: Unexpected Exception, this is probably a bug: A non-empty plugin name is required.
+```bash
+--extra-vars '{"page_title":"Dustbox","listen_port":8080}'
 ```
-
-### 해결 방법
-1. 환경변수에서 제거:
-   ```bash
-   unset ANSIBLE_CALLBACKS_ENABLED
-   unset DEFAULT_CALLBACK_WHITELIST
-   unset ANSIBLE_LOAD_CALLBACK_PLUGINS
-   ```
-2. Containerfile에서 잘못된 ENV 제거
-3. ansible.cfg 최소 설정 유지:
-   ```ini
-   [defaults]
-   stdout_callback = default
-   host_key_checking = False
-   retry_files_enabled = False
-   deprecation_warnings = False
-   ```
-4. 확인:
-   ```bash
-   ansible-config dump --only-changed | grep callback
-   ```
 
 ---
 
-## 결과물 구조
+## 10. Ansible 콜백 오류 해결
 
-```text
-/work/run_YYYYMMDD_HHMMSS-xxxxxx/
+```bash
+unset ANSIBLE_CALLBACKS_ENABLED
+unset DEFAULT_CALLBACK_WHITELIST
+unset ANSIBLE_LOAD_CALLBACK_PLUGINS
+```
+
+최소 설정(ansible.cfg):
+
+```ini
+[defaults]
+stdout_callback = default
+host_key_checking = False
+retry_files_enabled = False
+deprecation_warnings = False
+```
+
+---
+
+## 11. 실행 결과 구조
+
+```
+/work/run_YYYYMMDD_HHMMSS/
 ├── project/
 │   └── httpd-install.yml
 ├── logs/
@@ -457,105 +301,18 @@ Ansible 2.16+ 환경에서 `callbacks_enabled` 또는 `ANSIBLE_CALLBACKS_ENABLED
 
 ---
 
-## 🧪 실행 예시
+## 12. Role 스캐폴딩 + 자연어 작업 흐름
 
-```bash
-python3 kiki.py \
-  --base-url http://127.0.0.1:8082 \
-  --model local-llama \
-  --message "Nginx 설치 및 기본 index.html 생성" \
-  --inventory "node1,node2,node3" \
-  --verify all
-```
+1. 스캐폴딩 생성  
+   ```bash
+   kiki gen --target ansible --layout role --role-name webapp --role-hosts web --out roles
+   ```
 
-출력 예시:
-
-```text
-===== Generated Playbook (preview) =====
----
-- hosts: all
-  tasks:
-    - name: Install nginx
-      ansible.builtin.package:
-        name: nginx
-        state: present
-    - name: Start service
-      ansible.builtin.service:
-        name: nginx
-        state: started
-========================================
-===== Ansible Output =====
-PLAY [all] ********************************************************************
-TASK [Install nginx] **********************************************************
-ok: [node1]
-ok: [node2]
-ok: [node3]
-==========================
-Summary: {'phase': 'idempotency', 'failed': False}, rc=0
-bundle: /work/run_20251103_153022-dfa912/bundle.zip
-```
+2. 자연어로 Role 내용 자동 생성  
+   ```
+   webapp role의 tasks/main.yml에 nginx 설치와 index.html 템플릿 생성 태스크 작성해줘
+   ```
 
 ---
 
-## Troubleshooting
-
-| 증상 | 원인 | 해결 |
-|------|------|------|
-| ```yaml 코드펜스 포함됨 | 모델 출력 그대로 저장됨 | agentd.py의 `sanitize_yaml()` 최신 버전 사용 |
-| `json_indent` 관련 오류 | ansible-runner 관련 | runner 미사용, ansible-playbook만 사용 |
-| 실행 결과가 안 나옴 | stdout 누락 | kiki.py 최신 버전 사용 |
-| 한글 message로 파일명 깨짐 | slugify 미적용 | agentd.py 최신 버전 사용 |
-
-
-
-# 8. 스캐폴딩 구성 후 자연어 활용 가이드
-
-스캐폴딩으로 Ansible Role 뼈대를 생성한 다음, 자연어 기반으로 **tasks/handlers/vars/templates**를 자동 생성하는 전체 흐름입니다.
-
-## 1) 스캐폴딩 생성
-```bash
-./kiki.py gen --target ansible --layout role --role-name webapp --role-hosts web --out roles
-```
-
-**생성 결과:**
-```
-roles/webapp/
- ├── tasks/main.yml
- ├── handlers/main.yml
- ├── vars/main.yml
- ├── templates/
- └── meta/main.yml
-
-site_webapp.yml
-```
-## 2) 자연어 기반 Role 파일 생성
-
-### tasks/main.yml
-```bash
-python3 kiki.py --base-url http://127.0.0.1:8082 --model local-llama --message "webapp 역할의 tasks/main.yml을 생성해줘. Apache 설치, index.html 배포 포함." --name webapp_tasks --layout role --role-name webapp
-```
-
-### handlers/main.yml
-```bash
-python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할의 handlers 생성. Apache reload handler 포함." --layout role --role-name webapp
-```
-
-### vars/main.yml
-```bash
-python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할 vars 생성. server_port=80 포함." --layout role --role-name webapp
-```
-
-### 템플릿 생성
-```bash
-python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할 templates/index.html.j2 생성. Welcome 문구 포함." --layout role --role-name webapp
-```
-
-## 3) 역할 전체 적용
-```bash
-ansible-playbook site_webapp.yml
-```
-
-Runner 연동 시
-```bash
-python3 kiki.py --base-url http://127.0.0.1:8082 --message "webapp 역할 배포" --inventory "node1,node2" --verify all
-```
+작성 완료!
