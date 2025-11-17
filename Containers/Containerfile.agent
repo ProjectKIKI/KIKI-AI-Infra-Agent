@@ -18,12 +18,12 @@ ENV ANSIBLE_CONFIG=/ansible.cfg \
 
 WORKDIR /app
 
-COPY --chown=agent:agent ansible.cfg ./ansible.cfg
-COPY --chown=agent:agent requirements.txt ./requirements.txt
+COPY --chown=agent:agent Containers/ansible.cfg ./ansible.cfg
+COPY --chown=agent:agent Containers/requirements.txt ./requirements.txt
 RUN python -m pip install -U pip && python -m pip install --no-cache-dir -r requirements.txt
 
-COPY --chown=agent:agent kiki-agentd.py ./kiki_agentd.py
-COPY --chown=agent:agent prompts.yaml ./prompts.yaml
+COPY --chown=agent:agent Containers/kiki-agentd.py ./kiki_agentd.py
+COPY --chown=agent:agent Containers/prompts.yaml ./prompts.yaml
 
 USER agent
 
