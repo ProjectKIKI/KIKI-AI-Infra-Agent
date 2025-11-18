@@ -18,7 +18,7 @@ ENV ANSIBLE_CONFIG=/app/ansible.cfg \
 
 WORKDIR /app
 
-COPY --chown=agent:agent Containers/ansible.cfg ./ansible.cfg
+COPY --chown=agent:agent Containers/ansible.cfg ./app/ansible.cfg
 COPY --chown=agent:agent Containers/requirements.txt ./requirements.txt
 RUN python -m pip install -U pip && python -m pip install --no-cache-dir -r requirements.txt
 
