@@ -1,0 +1,1069 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+KIKI v3 - Infra Code / YAML / Playbook Generator CLI
+
+명령 요약:
+
+  kiki chat "일반 대화"
+
+  kiki ansible-ai "자연어 설명" \
+    --target ansible|k8s|osp|heat \
+    --base-url http://127.0.0.1:8082 \
+    --model local-llama \
+    --inventory "node1,node2,node3" \
+    --verify all \
+    --out playbooks/httpd.yml \
+    --confirm
+
+  # alias
+  kiki ansible-k8s "자연어"   # = ansible-ai --target k8s
+  kiki ansible-osp "자연어"   # = ansible-ai --target osp
+
+  kiki gen-role --name web --confirm
+  kiki gen-k8s --name web --image nginx:1.27 --port 80 --replicas 3 --namespace demo --out k8s/web.yaml --validate --confirm
+  kiki gen-heat --name demo-stack --out heat/demo-stack.yaml --confirm
+"""
+
+import argparse
+import sys
+import os
+import re
+from pathlib import Path
+import textwrap
+import json
+from typing import Optional
+
+# optional deps
+try:
+    import requests  # type: ignore
+except ImportError:
+    requests = None
+
+try:
+    import yaml  # type: ignore
+except ImportError:
+    yaml = None
+
+
+# ─────────────────────────────────────────────
+# 공용 유틸
+# ─────────────────────────────────────────────
+
+def debug(msg: str, enabled: bool = False) -> None:
+    if enabled:
+        print(f"[DEBUG] {msg}", file=sys.stderr)
+
+
+def write_file(path: Path, content: str, force: bool, debug_enabled: bool) -> None:
+    if path.exists() and not force:
+        debug(f"skip (exists): {path}", debug_enabled)
+        print(f"[WARN] 이미 존재하는 파일이라 건너뜀: {path}", file=sys.stderr)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        f.write(content)
+    debug(f"write: {path}", debug_enabled)
+    print(f"[INFO] 파일 생성: {path}")
+
+
+def resolve_llm_endpoint(base_url: str) -> str:
+    """
+    --base-url에 경로가 없으면 /v1/chat/completions 자동 추가.
+    agentd(OpenAI 프록시)든 llama.cpp든 모두 OpenAI 호환 기준.
+    """
+    if re.search(r"/v\d+/|/api/", base_url):
+        return base_url
+    return base_url.rstrip("/") + "/v1/chat/completions"
+
+
+def load_yaml_for_verify(yaml_text: str) -> bool:
+    """
+    YAML 문법 검사용. PyYAML 없으면 통과로 간주.
+    """
+    if yaml is None:
+        print("[WARN] PyYAML이 없어 YAML 문법 검사를 건너뜁니다. (pip install pyyaml)", file=sys.stderr)
+        return True
+    try:
+        list(yaml.safe_load_all(yaml_text))
+        return True
+    except Exception as e:
+        print(f"[ERROR] YAML 파싱 실패: {e}", file=sys.stderr)
+        return False
+
+
+def read_prompt_from_args_or_stdin(prompt: Optional[str], message: Optional[str]) -> str:
+    if prompt:
+        return prompt
+    if message:
+        return message
+    print("[KIKI] 프롬프트를 입력하세요. (Ctrl+D로 종료):", file=sys.stderr)
+    data = sys.stdin.read().strip()
+    if not data:
+        print("[ERROR] 비어있는 프롬프트입니다.", file=sys.stderr)
+        sys.exit(1)
+    return data
+
+
+def strip_markdown_fences(text: str) -> str:
+    """
+    LLM이 ``` 또는 ```yaml 코드 블록으로 감싼 출력에서 앞/뒤 fence를 제거한다.
+    """
+    t = text.strip()
+    if t.startswith("```"):
+        lines = t.splitlines()
+        # 첫 줄: ``` 또는 ```yaml
+        if lines:
+            lines = lines[1:]
+        # 마지막 줄이 ``` 이면 제거
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        t = "\n".join(lines).strip()
+    return t
+
+
+def extract_yaml_from_text(text: str) -> str:
+    """
+    LLM 출력에서 앞에 붙은 설명/문장을 제거하고
+    실제 YAML 부분(보통 '---' 또는 'heat_template_version'부터)을 추출한다.
+    """
+    t = text.strip()
+    lines = t.splitlines()
+
+    # 첫 번째 '---' 또는 'heat_template_version' 라인 찾기
+    start_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("---") or stripped.startswith("heat_template_version"):
+            start_idx = i
+            break
+
+    if start_idx is not None:
+        return "\n".join(lines[start_idx:]).strip()
+
+    # fallback: 그냥 전체 반환
+    return t
+
+
+def confirm_action(prompt: str) -> bool:
+    """
+    yes/no 확인을 받는 공용 함수.
+    """
+    while True:
+        ans = input(f"{prompt} [y/N]: ").strip().lower()
+        if ans in ("y", "yes"):
+            return True
+        if ans in ("n", "no", ""):
+            return False
+        print("y 또는 n으로 입력해주세요.")
+
+
+# ─────────────────────────────────────────────
+# LLM 호출
+# ─────────────────────────────────────────────
+
+def call_llm_chat(
+    base_url: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    api_key: Optional[str],
+    debug_enabled: bool = False,
+) -> str:
+    if requests is None:
+        print(
+            "[ERROR] 'requests' 모듈이 없습니다. 다음으로 설치해 주세요:\n"
+            "  pip install requests",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    endpoint = resolve_llm_endpoint(base_url)
+    debug(f"LLM endpoint = {endpoint}", debug_enabled)
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    debug(f"payload: {json.dumps(payload)[:200]}...", debug_enabled)
+
+    try:
+        resp = requests.post(endpoint, headers=headers, data=json.dumps(payload), timeout=600)
+    except Exception as e:
+        print(f"[ERROR] LLM 요청 실패: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if resp.status_code >= 400:
+        print(f"[ERROR] LLM 응답 오류: {resp.status_code} {resp.text}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        return content
+    except Exception as e:
+        print(f"[ERROR] LLM 응답 파싱 실패: {e}", file=sys.stderr)
+        print("[RAW RESPONSE]", resp.text, file=sys.stderr)
+        sys.exit(1)
+
+
+# ─────────────────────────────────────────────
+# chat
+# ─────────────────────────────────────────────
+
+def cmd_chat(args: argparse.Namespace) -> None:
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
+    api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
+    debug_enabled = args.debug
+
+    user_prompt = read_prompt_from_args_or_stdin(args.prompt, args.message)
+
+    system_prompt = args.system or (
+        "You are KIKI, an infra/DevOps assistant. "
+        "답변은 한국어로 해도 좋고, 코드 블록은 올바른 형식을 유지하세요."
+    )
+
+    reply = call_llm_chat(
+        base_url=base_url,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        api_key=api_key,
+        debug_enabled=debug_enabled,
+    )
+
+    if args.confirm:
+        if not confirm_action("LLM 응답을 출력할까요?"):
+            print("[INFO] 사용자 취소로 작업 중단됨.")
+            sys.exit(0)
+
+    print(reply)
+
+
+# ─────────────────────────────────────────────
+# ansible-ai (+ alias)
+# ─────────────────────────────────────────────
+
+def build_ansible_ai_system_prompt(target: str, verify: str, inventory: Optional[str]) -> str:
+    base = ""
+
+    if target == "ansible":
+        base = textwrap.dedent("""
+        You are an expert Ansible Playbook generator.
+        - Output ONLY valid Ansible YAML. No markdown, no explanations.
+        - The top-level must be a list of plays.
+        - Use idempotent ansible.builtin modules whenever possible.
+        - Never wrap the YAML in any markdown code fences such as triple backticks.
+        - The output MUST start with a line containing only '---'.
+        """)
+    elif target == "k8s":
+        base = textwrap.dedent("""
+        You are an expert Ansible Playbook generator for Kubernetes.
+        - Output ONLY valid Ansible YAML. No markdown, no explanations.
+        - Use kubernetes.core collection modules (k8s, k8s_info, etc.).
+        - The playbook should apply Kubernetes resources based on the user request.
+        - Never wrap the YAML in any markdown code fences such as triple backticks.
+        - The output MUST start with a line containing only '---'.
+        """)
+    elif target == "osp":
+        base = textwrap.dedent("""
+        You are an expert Ansible Playbook generator for OpenStack.
+        - Output ONLY valid Ansible YAML. No markdown, no explanations.
+        - Use openstack.cloud collection modules, not legacy os_* modules.
+        - Never wrap the YAML in any markdown code fences such as triple backticks.
+        - The output MUST start with a line containing only '---'.
+        """)
+    elif target == "heat":
+        base = textwrap.dedent("""
+        You are an expert OpenStack Heat template author.
+        - Output ONLY valid YAML for a single Heat template (no markdown, no explanations).
+        - Include heat_template_version, description, parameters, resources, and outputs if appropriate.
+        - Never wrap the YAML in any markdown code fences such as triple backticks.
+        - The output MUST start with 'heat_template_version:' on the first line.
+        """)
+    else:
+        base = "You are an infrastructure as code generator. Output only valid YAML."
+
+    if verify in ("syntax", "all"):
+        base += "\n- The YAML must be syntactically valid.\n"
+
+    if verify == "all":
+        base += "\n- Make playbooks idempotent and use best practices.\n"
+
+    if inventory:
+        base += f"\n- Inventory context (host names or groups): {inventory}\n"
+
+    return base.strip()
+
+
+def cmd_ansible_ai(args: argparse.Namespace) -> None:
+    # target: ansible | k8s | osp | heat
+    target = getattr(args, "target", None) or getattr(args, "ansible_target", "ansible")
+    verify = args.verify
+    inventory = args.inventory
+    debug_enabled = args.debug
+
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
+    api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
+
+    user_prompt = read_prompt_from_args_or_stdin(args.prompt, args.message)
+
+    system_prompt = build_ansible_ai_system_prompt(target, verify, inventory)
+
+    # user_prompt에 옵션 컨텍스트 추가
+    extra = []
+    if inventory:
+        extra.append(f"Inventory: {inventory}")
+    if target in ("ansible", "k8s", "osp"):
+        extra.append("결과는 Ansible playbook 전체 YAML로 출력해줘.")
+    elif target == "heat":
+        extra.append("결과는 Heat 템플릿 YAML 한 개만 출력해줘.")
+
+    if extra:
+        user_prompt = user_prompt + "\n\n[Context]\n" + "\n".join(extra)
+
+    yaml_text_raw = call_llm_chat(
+        base_url=base_url,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        api_key=api_key,
+        debug_enabled=debug_enabled,
+    )
+
+    # 1차 방어: ``` 코드 블록 펜스 제거
+    yaml_text_clean = strip_markdown_fences(yaml_text_raw)
+
+    # 2차 방어: 설명/문장 제거하고 YAML 부분만 추출
+    yaml_text = extract_yaml_from_text(yaml_text_clean)
+
+    # verify 옵션 처리
+    if verify in ("syntax", "all"):
+        ok = load_yaml_for_verify(yaml_text)
+        if not ok:
+            print("[ERROR] YAML 검증에 실패했습니다. 위 오류를 확인하세요.", file=sys.stderr)
+            sys.exit(1)
+
+    # 실행 전 확인
+    if args.confirm:
+        print("========== 생성된 YAML (preview) ==========")
+        print(yaml_text)
+        print("===========================================")
+        if not confirm_action("이 내용을 출력/저장할까요?"):
+            print("[INFO] 사용자 취소로 작업 중단됨.")
+            sys.exit(0)
+
+    # 출력 처리
+    if args.out:
+        out_path = Path(args.out)
+        write_file(out_path, yaml_text, force=args.force, debug_enabled=debug_enabled)
+    else:
+        print(yaml_text)
+
+
+# ─────────────────────────────────────────────
+# gen-role (Ansible role scaffolding)
+# ─────────────────────────────────────────────
+
+def cmd_gen_role(args: argparse.Namespace) -> None:
+    name = args.name
+    roles_dir = Path(args.roles_dir).expanduser() if args.roles_dir else Path.cwd() / "roles"
+    debug_enabled = args.debug
+
+    base_dir = roles_dir / name
+
+    if args.confirm:
+        if not confirm_action(f"roles/{name}/ 역할 스캐폴딩을 생성할까요?"):
+            print("[INFO] 사용자 취소로 작업 중단됨.")
+            sys.exit(0)
+
+    base_dir.mkdir(parents=True, exist_ok=True)
+    debug(f"mkdir: {base_dir}", debug_enabled)
+
+    subdirs = ["tasks", "handlers", "templates", "files", "vars", "defaults", "meta"]
+    for d in subdirs:
+        p = base_dir / d
+        p.mkdir(parents=True, exist_ok=True)
+        debug(f"mkdir: {p}", debug_enabled)
+
+    files = {
+        base_dir / "tasks" / "main.yml": textwrap.dedent(f"""\
+            ---
+            # {name} role - main tasks
+            - name: 예시 작업 - 패키지 설치
+              ansible.builtin.package:
+                name: vim
+                state: present
+        """),
+        base_dir / "handlers" / "main.yml": textwrap.dedent("""\
+            ---
+            # handlers for this role
+            # - name: restart service
+            #   ansible.builtin.service:
+            #     name: httpd
+            #     state: restarted
+        """),
+        base_dir / "vars" / "main.yml": textwrap.dedent("""\
+            ---
+            # role-level variables
+        """),
+        base_dir / "defaults" / "main.yml": textwrap.dedent("""\
+            ---
+            # default variables (overridable)
+        """),
+        base_dir / "meta" / "main.yml": textwrap.dedent(f"""\
+            ---
+            galaxy_info:
+              author: kiki
+              description: Auto-generated role {name}
+              license: MIT
+              min_ansible_version: 2.14
+            dependencies: []
+        """),
+    }
+
+    for path, content in files.items():
+        write_file(path, content, force=args.force, debug_enabled=debug_enabled)
+
+
+# ─────────────────────────────────────────────
+# gen-k8s (Deployment + Service 스캐폴딩)
+# ─────────────────────────────────────────────
+
+def cmd_gen_k8s(args: argparse.Namespace) -> None:
+    name = args.name
+    image = args.image
+    port = args.port
+    replicas = args.replicas
+    namespace = args.namespace
+    debug_enabled = args.debug
+
+    content = textwrap.dedent(f"""\
+    ---
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: {name}
+      namespace: {namespace}
+      labels:
+        app: {name}
+    spec:
+      replicas: {replicas}
+      selector:
+        matchLabels:
+          app: {name}
+      template:
+        metadata:
+          labels:
+            app: {name}
+        spec:
+          containers:
+            - name: {name}
+              image: {image}
+              ports:
+                - containerPort: {port}
+
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: {name}
+      namespace: {namespace}
+      labels:
+        app: {name}
+    spec:
+      selector:
+        app: {name}
+      ports:
+        - name: http
+          port: {port}
+          targetPort: {port}
+      type: ClusterIP
+    """)
+
+    if args.validate:
+        ok = load_yaml_for_verify(content)
+        if not ok:
+            print("[ERROR] gen-k8s가 생성한 YAML 검증 실패", file=sys.stderr)
+            sys.exit(1)
+
+    if args.confirm:
+        print("========== 생성될 K8s YAML (preview) ==========")
+        print(content)
+        print("===============================================")
+        if not confirm_action("이 내용을 출력/저장할까요?"):
+            print("[INFO] 사용자 취소로 작업 중단됨.")
+            sys.exit(0)
+
+    if args.out:
+        out_path = Path(args.out)
+        write_file(out_path, content, force=args.force, debug_enabled=debug_enabled)
+    else:
+        print(content)
+
+
+# ─────────────────────────────────────────────
+# gen-heat (Heat 템플릿 스켈레톤)
+# ─────────────────────────────────────────────
+
+def cmd_gen_heat(args: argparse.Namespace) -> None:
+    name = args.name
+    debug_enabled = args.debug
+
+    content = textwrap.dedent(f"""\
+    heat_template_version: 2021-04-16
+
+    description: >
+      Auto-generated Heat template for {name}
+      KIKI가 생성한 YAML-only 템플릿입니다.
+
+    parameters:
+      image:
+        type: string
+        description: Glance image name or ID
+      flavor:
+        type: string
+        description: Nova flavor name
+      network_id:
+        type: string
+        description: Neutron network ID
+      key_name:
+        type: string
+        description: Nova keypair name
+        default: default
+
+    resources:
+      {name}_server:
+        type: OS::Nova::Server
+        properties:
+          name: {name}-server
+          image: {{ get_param: image }}
+          flavor: {{ get_param: flavor }}
+          key_name: {{ get_param: key_name }}
+          networks:
+            - network: {{ get_param: network_id }}
+
+    outputs:
+      server_name:
+        description: Server name
+        value: {{ get_attr: [{name}_server, name] }}
+
+      server_ip:
+        description: First fixed IP
+        value: {{ get_attr: [{name}_server, first_address] }}
+    """)
+
+    if args.confirm:
+        print("========== 생성될 Heat 템플릿 (preview) ==========")
+        print(content)
+        print("===============================================")
+        if not confirm_action("이 내용을 출력/저장할까요?"):
+            print("[INFO] 사용자 취소로 작업 중단됨.")
+            sys.exit(0)
+
+    if args.out:
+        out_path = Path(args.out)
+        write_file(out_path, content, force=args.force, debug_enabled=debug_enabled)
+    else:
+        print(content)
+
+
+# ─────────────────────────────────────────────
+# argparse 구성
+# ─────────────────────────────────────────────
+
+def add_llm_common_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--base-url",
+        help="LLM 서버 base URL (기본: env KIKI_LLM_BASE_URL 또는 http://127.0.0.1:8082)",
+    )
+    p.add_argument(
+        "--model",
+        help="LLM 모델 이름 (기본: env KIKI_LLM_MODEL 또는 local-model)",
+    )
+    p.add_argument(
+        "--api-key",
+        help="API 키 (필요 시, env KIKI_LLM_API_KEY 사용 가능)",
+    )
+
+
+def add_prompt_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "prompt",
+        nargs="?",
+        help="자연어 프롬프트 (생략 시 --message 또는 STDIN 사용)",
+    )
+    p.add_argument(
+        "--message",
+        help="자연어 프롬프트 (prompt와 동일, 스크립트 호출용)",
+    )
+
+
+def add_common_flags(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="디버그 메시지 출력",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="기존 파일 덮어쓰기 허용",
+    )
+    p.add_argument(
+        "--confirm",
+        action="store_true",
+        help="실행 전에 사용자 확인을 요청합니다.",
+    )
+
+
+
+
+# ─────────────────────────────────────────────
+# health / log commands
+# ─────────────────────────────────────────────
+
+def _dummy_collect_using_ansible(inventory: str, profile: str, playbook: Optional[str]) -> dict:
+    """
+    ⚠️ 스켈레톤용 더미 함수.
+
+    실제 구현에서는:
+      - ansible-playbook 또는 ansible-runner 실행
+      - 각 호스트 별로 kiki_metrics fact (dict)를 모아
+        {"host1": {...}, "host2": {...}} 형태로 반환하면 됨.
+
+    여기서는 예시 데이터만 넣어둡니다.
+    """
+    return {
+        "example-host1": {
+            "cpu_load1": 0.25,
+            "cpu_load5": 0.30,
+            "cpu_load15": 0.35,
+            "mem_used_mb": 1024,
+            "mem_total_mb": 4096,
+            "mem_used_pct": 25.0,
+            "disk_root_used_pct": 71.3,
+            "disk_root_used_gb": 30.0,
+            "disk_root_total_gb": 42.0,
+            "error_count": 1,
+            "warn_count": 3,
+            "extra": {
+                "note": f"dummy profile={profile}",
+                "inventory": inventory,
+                "playbook": playbook,
+            },
+        }
+    }
+
+
+def cmd_health_collect(args: argparse.Namespace) -> None:
+    """
+    kiki health-collect
+
+    - 서버 헬스/로그 메트릭을 수집하여 SQLite DB에 저장하는 명령.
+    - 현재는 dummy 데이터를 넣고, 실제 환경에서는 Ansible 실행 로직으로 교체하면 됩니다.
+    """
+    from health_core import init_db, insert_metric
+
+    db_path = args.db
+    inventory = args.inventory
+    source = args.source
+    profile = args.profile
+    playbook = args.playbook
+
+    print(f"[KIKI][health-collect] db={db_path}, inventory={inventory}, source={source}, profile={profile}")
+
+    init_db(db_path)
+
+    # TODO: 실제 ansible 실행 로직으로 교체
+    host_to_metrics = _dummy_collect_using_ansible(inventory, profile, playbook)
+
+    inserted = 0
+    for host, metrics in host_to_metrics.items():
+        insert_metric(db_path, host=host, source=source, metrics=metrics)
+        inserted += 1
+        if args.debug:
+            debug(f"[health-collect] inserted host={host}, metrics={metrics}", True)
+
+    print(f"[KIKI][health-collect] inserted {inserted} rows into {db_path}")
+
+
+def cmd_health_ai(args: argparse.Namespace) -> None:
+    """
+    kiki health-ai
+
+    - 수집된 메트릭(SQLite DB)을 기반으로 LLM이 상태를 요약/분석.
+    """
+    from health_core import query_metrics_since
+
+    db_path = args.db
+    since = args.since
+    base_url = args.base_url
+    model = args.model
+    api_key = args.api_key
+    hosts = args.hosts.split(",") if args.hosts else None
+    source = args.source
+    question = args.prompt
+
+    rows = query_metrics_since(db_path, since_sec=since, hosts=hosts, source=source)
+
+    if args.raw:
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+
+    if not rows:
+        print("[KIKI][health-ai] metrics not found for given condition.")
+        return
+
+    system_prompt = """
+You are an expert SRE / system reliability engineer.
+You receive time-series health metrics from multiple servers.
+Each item has fields like cpu_load1, mem_used_pct, disk_root_used_pct, error_count, warn_count, and extra.
+In Korean, summarize:
+
+- Which hosts look healthy
+- Which hosts look overloaded or risky
+- Any near-critical situation (disk > 90%, mem > 80%, constant high load, many errors)
+- Short recommendations.
+""".strip()
+
+    user_prompt = f"""
+사용자의 요청:
+
+{question}
+
+아래는 최근 {since}초 동안 수집된 메트릭 데이터입니다.
+JSON 배열이며, 각 항목은 하나의 샘플입니다.
+
+{json.dumps(rows, ensure_ascii=False, indent=2)}
+""".strip()
+
+    if args.debug:
+        debug("[health-ai] system_prompt:\n" + system_prompt, True)
+        debug("[health-ai] user_prompt(head):\n" + user_prompt[:2000], True)
+
+    answer = call_llm_chat(
+        base_url=base_url,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        api_key=api_key,
+        debug_enabled=args.debug,
+    )
+    print(answer)
+
+
+def cmd_log_ai(args: argparse.Namespace) -> None:
+    """
+    kiki log-ai
+
+    - 외부 txt 로그 파일 / stdin 로그를 LLM으로 분석.
+    """
+    import re
+
+    from health_core import tail_file
+
+    base_url = args.base_url
+    model = args.model
+    api_key = args.api_key
+    question = args.prompt
+    max_lines = args.max_lines
+    grep_pattern = args.grep
+
+    # 1) 입력 소스 결정: --file 또는 stdin
+    if args.file:
+        text = tail_file(args.file, max_lines=max_lines)
+    else:
+        if sys.stdin.isatty():
+            print("[KIKI][log-ai] 파일을 지정하거나, 파이프/리다이렉트로 로그를 전달하세요.", file=sys.stderr)
+            sys.exit(1)
+        raw = sys.stdin.read()
+        lines = raw.splitlines()
+        if len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        text = "\n".join(lines)
+
+    # 2) grep 필터 (선택)
+    if grep_pattern:
+        pattern = re.compile(grep_pattern)
+        filtered_lines = [ln for ln in text.splitlines() if pattern.search(ln)]
+        text = "\n".join(filtered_lines)
+
+    system_prompt = """
+You are an expert log analyst (SRE/DevOps).
+You will receive raw log lines (plain text).
+- Identify errors, warnings, or frequent patterns.
+- Group similar messages.
+- If possible, infer root causes or suspicious points.
+- Answer in Korean.
+If the user asks for specific filtering or summarization, follow that.
+""".strip()
+
+    user_prompt = f"""
+사용자의 요청:
+
+{question}
+
+아래는 분석할 로그입니다. (최대 {max_lines}줄, 필요한 경우 샘플링됨)
+
+<log>
+{text}
+</log>
+""".strip()
+
+    if args.debug:
+        debug("[log-ai] system_prompt:\n" + system_prompt, True)
+        debug("[log-ai] user_prompt(head):\n" + user_prompt[:2000], True)
+
+    answer = call_llm_chat(
+        base_url=base_url,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        api_key=api_key,
+        debug_enabled=args.debug,
+    )
+    print(answer)
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="kiki",
+        description="KIKI v3 - Infra Code / YAML / Playbook Generator CLI",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    # chat
+    p_chat = subparsers.add_parser(
+        "chat",
+        help="LLM 일반 대화",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_chat)
+    add_prompt_args(p_chat)
+    add_llm_common_args(p_chat)
+    p_chat.add_argument(
+        "--system",
+        help="system prompt (기본: infra/DevOps 도우미)",
+    )
+    p_chat.set_defaults(func=cmd_chat)
+
+    # ansible-ai (메인 자연어 → 코드 엔진)
+    p_ai = subparsers.add_parser(
+        "ansible-ai",
+        help="자연어 → Ansible / OpenStack / Kubernetes / Heat YAML 생성",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_ai)
+    add_prompt_args(p_ai)
+    add_llm_common_args(p_ai)
+    p_ai.add_argument(
+        "--target",
+        choices=["ansible", "k8s", "osp", "heat"],
+        default="ansible",
+        help="생성 대상 타입 (ansible|k8s|osp|heat)",
+    )
+    p_ai.add_argument(
+        "--inventory",
+        help="인벤토리 정보 (호스트/그룹 문자열, LLM 컨텍스트용)",
+    )
+    p_ai.add_argument(
+        "--verify",
+        choices=["none", "syntax", "all"],
+        default="none",
+        help="출력 YAML 검증 수준 (none|syntax|all)",
+    )
+    p_ai.add_argument(
+        "--out",
+        help="결과 YAML을 저장할 파일 경로 (생략 시 stdout으로 출력)",
+    )
+    p_ai.set_defaults(func=cmd_ansible_ai)
+
+    # ansible-k8s (alias)
+    p_ai_k8s = subparsers.add_parser(
+        "ansible-k8s",
+        help="자연어 → Kubernetes용 Ansible 플레이북 (alias: ansible-ai --target k8s)",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_ai_k8s)
+    add_prompt_args(p_ai_k8s)
+    add_llm_common_args(p_ai_k8s)
+    p_ai_k8s.add_argument(
+        "--inventory",
+        help="인벤토리 정보",
+    )
+    p_ai_k8s.add_argument(
+        "--verify",
+        choices=["none", "syntax", "all"],
+        default="none",
+        help="출력 YAML 검증 수준",
+    )
+    p_ai_k8s.add_argument(
+        "--out",
+        help="결과 YAML 파일 경로",
+    )
+    p_ai_k8s.set_defaults(func=cmd_ansible_ai, ansible_target="k8s")
+
+    # ansible-osp (alias)
+    p_ai_osp = subparsers.add_parser(
+        "ansible-osp",
+        help="자연어 → OpenStack용 Ansible 플레이북 (alias: ansible-ai --target osp)",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_ai_osp)
+    add_prompt_args(p_ai_osp)
+    add_llm_common_args(p_ai_osp)
+    p_ai_osp.add_argument(
+        "--inventory",
+        help="인벤토리 정보",
+    )
+    p_ai_osp.add_argument(
+        "--verify",
+        choices=["none", "syntax", "all"],
+        default="none",
+        help="출력 YAML 검증 수준",
+    )
+    p_ai_osp.add_argument(
+        "--out",
+        help="결과 YAML 파일 경로",
+    )
+    p_ai_osp.set_defaults(func=cmd_ansible_ai, ansible_target="osp")
+
+    # gen-role
+    p_role = subparsers.add_parser(
+        "gen-role",
+        help="Ansible role 스캐폴딩 생성 (roles/<name>/ 구조)",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_role)
+    p_role.add_argument(
+        "--name",
+        required=True,
+        help="role 이름 (roles/<name>/)",
+    )
+    p_role.add_argument(
+        "--roles-dir",
+        help="roles 디렉토리 기본 경로 (기본: ./roles)",
+    )
+    p_role.set_defaults(func=cmd_gen_role)
+
+    # gen-k8s
+    p_k8s = subparsers.add_parser(
+        "gen-k8s",
+        help="Kubernetes Deployment + Service YAML 스캐폴딩 생성",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_k8s)
+    p_k8s.add_argument("--name", required=True, help="Deployment/Service 이름")
+    p_k8s.add_argument("--image", required=True, help="컨테이너 이미지")
+    p_k8s.add_argument("--port", type=int, default=80, help="서비스/컨테이너 포트 (기본: 80)")
+    p_k8s.add_argument("--replicas", type=int, default=1, help="Replica 수 (기본: 1)")
+    p_k8s.add_argument("--namespace", dest="namespace", default="default", help="Namespace (기본: default)")
+    p_k8s.add_argument("--out", help="출력 파일 경로 (생략 시 stdout)")
+    p_k8s.add_argument(
+        "--validate",
+        action="store_true",
+        help="생성된 YAML 문법 검증(Python에서 로컬 체크)",
+    )
+    p_k8s.set_defaults(func=cmd_gen_k8s)
+
+    # gen-heat
+    p_heat = subparsers.add_parser(
+        "gen-heat",
+        help="OpenStack Heat 템플릿 스켈레톤 YAML 생성",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_heat)
+    p_heat.add_argument("--name", required=True, help="Heat 스택/템플릿 이름 prefix")
+    p_heat.add_argument("--out", help="출력 파일 경로 (생략 시 stdout)")
+    p_heat.set_defaults(func=cmd_gen_heat)
+
+
+
+    # health-collect
+    p_hc = subparsers.add_parser(
+        "health-collect",
+        help="서버 헬스/로그 메트릭을 수집하여 SQLite DB에 저장",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_hc)
+    p_hc.add_argument("--inventory", required=True, help="Ansible 인벤토리 표현(설명용 텍스트도 가능)")
+    p_hc.add_argument("--db", default="/data/kiki/metrics.db", help="SQLite DB 경로")
+    p_hc.add_argument("--source", default="default", help="수집 소스 태그 (ex: k8s-node)")
+    g_hc = p_hc.add_mutually_exclusive_group()
+    g_hc.add_argument("--profile", default="basic", help="내장 헬스 프로파일 이름")
+    g_hc.add_argument("--playbook", help="사용자 정의 health playbook 경로")
+    p_hc.add_argument("--debug", action="store_true")
+    p_hc.set_defaults(func=cmd_health_collect)
+
+    # health-ai
+    p_hai = subparsers.add_parser(
+        "health-ai",
+        help="수집된 메트릭을 기반으로 LLM이 상태를 요약/분석",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_hai)
+    p_hai.add_argument("prompt", help="LLM에 전달할 질문/요청 문장")
+    p_hai.add_argument("--db", default="/data/kiki/metrics.db", help="SQLite DB 경로")
+    p_hai.add_argument("--since", type=int, default=600, help="최근 N초 동안의 데이터만 분석 (기본 600)")
+    p_hai.add_argument("--hosts", help="호스트 필터 (콤마 구분)")
+    p_hai.add_argument("--source", help="source 필터 (ex: k8s-node)")
+    p_hai.add_argument("--base-url", default="http://127.0.0.1:8082", help="LLM base URL")
+    p_hai.add_argument("--model", default="local-llama", help="LLM 모델 이름")
+    p_hai.add_argument("--api-key", help="LLM API 키 (필요 시)")
+    p_hai.add_argument("--raw", action="store_true", help="LLM 호출 대신 raw JSON만 출력")
+    p_hai.add_argument("--debug", action="store_true")
+    p_hai.set_defaults(func=cmd_health_ai)
+
+    # log-ai
+    p_lai = subparsers.add_parser(
+        "log-ai",
+        help="외부 txt 로그 파일 또는 stdin 로그를 LLM으로 분석",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_lai)
+    p_lai.add_argument("prompt", help="LLM에 전달할 질문/요청 문장")
+    p_lai.add_argument("--file", help="분석할 로그 파일 경로 (없으면 stdin 사용)")
+    p_lai.add_argument("--max-lines", type=int, default=2000, help="최대 몇 줄까지 사용할지")
+    p_lai.add_argument("--grep", help="사전 필터용 grep 패턴 (정규식)")
+    p_lai.add_argument("--base-url", default="http://127.0.0.1:8082", help="LLM base URL")
+    p_lai.add_argument("--model", default="local-llama", help="LLM 모델 이름")
+    p_lai.add_argument("--api-key", help="LLM API 키 (필요 시)")
+    p_lai.add_argument("--debug", action="store_true")
+    p_lai.set_defaults(func=cmd_log_ai)
+
+    return parser
+
+
+# ─────────────────────────────────────────────
+# main
+# ─────────────────────────────────────────────
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if not getattr(args, "command", None):
+        parser.print_help()
+        sys.exit(0)
+
+    if hasattr(args, "func"):
+        args.func(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
