@@ -20,6 +20,8 @@ WORKDIR /app
 
 COPY --chown=agent:agent Containers/ansible.cfg ./app/ansible.cfg
 COPY --chown=agent:agent Containers/requirements.txt ./requirements.txt
+COPY --chown=agent:agent Containers/root_passwd.txt ./root_passwd.txt
+
 RUN python -m pip install -U pip && python -m pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=agent:agent Containers/kiki-agentd.py ./kiki_agentd.py

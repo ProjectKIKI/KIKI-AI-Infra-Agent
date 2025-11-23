@@ -628,9 +628,201 @@ def add_common_flags(p: argparse.ArgumentParser) -> None:
 
 
 
+# ─────────────────────────────────────────────
+# Health / Metrics / Log 분석 기능 (SQLite 기반)
+# ─────────────────────────────────────────────
+
+def kiki_init_metrics_db(db_path: str) -> None:
+    """
+    metrics/logs 테이블 생성 (존재하면 무시).
+    kiki 내부에서만 사용하는 간단한 SQLite 초기화 함수.
+    """
+    from pathlib import Path
+    import sqlite3
+
+    path = Path(db_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.cursor()
+        # 메트릭 테이블
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                host TEXT NOT NULL,
+                source TEXT NOT NULL,
+                cpu_load1 REAL,
+                cpu_load5 REAL,
+                cpu_load15 REAL,
+                mem_used_mb REAL,
+                mem_total_mb REAL,
+                mem_used_pct REAL,
+                disk_root_used_pct REAL,
+                disk_root_used_gb REAL,
+                disk_root_total_gb REAL,
+                error_count INTEGER,
+                warn_count INTEGER,
+                extra_json TEXT
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_metrics_ts_host ON metrics(ts, host)"
+        )
+
+        # (옵션) 로그 테이블 - 필요 시 확장
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                host TEXT NOT NULL,
+                source TEXT NOT NULL,
+                level TEXT,
+                service TEXT,
+                message TEXT
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_logs_ts_host ON logs(ts, host)"
+        )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def kiki_insert_metric(
+    db_path: str,
+    host: str,
+    source: str,
+    metrics: dict,
+    ts: Optional[int] = None,
+) -> None:
+    """
+    kiki_metrics dict를 받아 metrics 테이블에 한 줄 저장.
+    metrics["extra"]는 extra_json으로 직렬화.
+    """
+    import time
+    import json as _json
+    import sqlite3
+
+    ts_val = int(ts or time.time())
+    extra = metrics.get("extra") or {}
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO metrics (
+                ts, host, source,
+                cpu_load1, cpu_load5, cpu_load15,
+                mem_used_mb, mem_total_mb, mem_used_pct,
+                disk_root_used_pct, disk_root_used_gb, disk_root_total_gb,
+                error_count, warn_count,
+                extra_json
+            ) VALUES (?, ?, ?,
+                      ?, ?, ?,
+                      ?, ?, ?,
+                      ?, ?, ?,
+                      ?, ?,
+                      ?)
+            """,
+            (
+                ts_val,
+                host,
+                source,
+                metrics.get("cpu_load1"),
+                metrics.get("cpu_load5"),
+                metrics.get("cpu_load15"),
+                metrics.get("mem_used_mb"),
+                metrics.get("mem_total_mb"),
+                metrics.get("mem_used_pct"),
+                metrics.get("disk_root_used_pct"),
+                metrics.get("disk_root_used_gb"),
+                metrics.get("disk_root_total_gb"),
+                metrics.get("error_count"),
+                metrics.get("warn_count"),
+                _json.dumps(extra, ensure_ascii=False),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def kiki_query_metrics_since(
+    db_path: str,
+    since_sec: int,
+    hosts: Optional[list] = None,
+    source: Optional[str] = None,
+) -> list:
+    """
+    최근 since_sec 초 동안의 metrics를 조회해서 dict 리스트로 반환.
+    """
+    import time
+    import json as _json
+    import sqlite3
+
+    ts_min = int(time.time()) - since_sec
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        cur = conn.cursor()
+        query = "SELECT * FROM metrics WHERE ts >= ?"
+        args: list = [ts_min]
+
+        if hosts:
+            placeholders = ",".join("?" for _ in hosts)
+            query += f" AND host IN ({placeholders})"
+            args.extend(hosts)
+
+        if source:
+            query += " AND source = ?"
+            args.append(source)
+
+        query += " ORDER BY ts ASC"
+        cur.execute(query, args)
+        rows = cur.fetchall()
+        result: list = []
+        for r in rows:
+            row_dict = dict(r)
+            if row_dict.get("extra_json"):
+                try:
+                    row_dict["extra"] = _json.loads(row_dict["extra_json"])
+                except Exception:
+                    row_dict["extra"] = None
+            result.append(row_dict)
+        return result
+    finally:
+        conn.close()
+
+
+def kiki_tail_file(path: str, max_lines: int = 2000) -> str:
+    """
+    큰 로그 파일에서도 뒤에서 max_lines 줄만 읽어 텍스트로 반환.
+    너무 거대해지는 걸 방지하기 위한 헬퍼.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+
+    text = p.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+    return "\n".join(lines)
+
 
 # ─────────────────────────────────────────────
-# health / log commands
+# health-collect: 한 번 헬스/로그 수집해서 DB에 저장
 # ─────────────────────────────────────────────
 
 def _dummy_collect_using_ansible(inventory: str, profile: str, playbook: Optional[str]) -> dict:
@@ -639,10 +831,14 @@ def _dummy_collect_using_ansible(inventory: str, profile: str, playbook: Optiona
 
     실제 구현에서는:
       - ansible-playbook 또는 ansible-runner 실행
-      - 각 호스트 별로 kiki_metrics fact (dict)를 모아
-        {"host1": {...}, "host2": {...}} 형태로 반환하면 됨.
+      - 각 호스트별 kiki_metrics fact(dict)를 수집해서
 
-    여기서는 예시 데이터만 넣어둡니다.
+    반환 형식:
+      {
+        "host1": {...},
+        "host2": {...},
+      }
+    로 맞춰주면 됨.
     """
     return {
         "example-host1": {
@@ -667,14 +863,6 @@ def _dummy_collect_using_ansible(inventory: str, profile: str, playbook: Optiona
 
 
 def cmd_health_collect(args: argparse.Namespace) -> None:
-    """
-    kiki health-collect
-
-    - 서버 헬스/로그 메트릭을 수집하여 SQLite DB에 저장하는 명령.
-    - 현재는 dummy 데이터를 넣고, 실제 환경에서는 Ansible 실행 로직으로 교체하면 됩니다.
-    """
-    from health_core import init_db, insert_metric
-
     db_path = args.db
     inventory = args.inventory
     source = args.source
@@ -683,14 +871,14 @@ def cmd_health_collect(args: argparse.Namespace) -> None:
 
     print(f"[KIKI][health-collect] db={db_path}, inventory={inventory}, source={source}, profile={profile}")
 
-    init_db(db_path)
+    kiki_init_metrics_db(db_path)
 
     # TODO: 실제 ansible 실행 로직으로 교체
     host_to_metrics = _dummy_collect_using_ansible(inventory, profile, playbook)
 
     inserted = 0
     for host, metrics in host_to_metrics.items():
-        insert_metric(db_path, host=host, source=source, metrics=metrics)
+        kiki_insert_metric(db_path, host=host, source=source, metrics=metrics)
         inserted += 1
         if args.debug:
             debug(f"[health-collect] inserted host={host}, metrics={metrics}", True)
@@ -698,27 +886,30 @@ def cmd_health_collect(args: argparse.Namespace) -> None:
     print(f"[KIKI][health-collect] inserted {inserted} rows into {db_path}")
 
 
-def cmd_health_ai(args: argparse.Namespace) -> None:
-    """
-    kiki health-ai
+# ─────────────────────────────────────────────
+# health-ai: DB 기반 상태 분석 (LLM 사용)
+# ─────────────────────────────────────────────
 
-    - 수집된 메트릭(SQLite DB)을 기반으로 LLM이 상태를 요약/분석.
-    """
-    from health_core import query_metrics_since
+def cmd_health_ai(args: argparse.Namespace) -> None:
+    import json as _json
 
     db_path = args.db
     since = args.since
-    base_url = args.base_url
-    model = args.model
-    api_key = args.api_key
     hosts = args.hosts.split(",") if args.hosts else None
     source = args.source
-    question = args.prompt
 
-    rows = query_metrics_since(db_path, since_sec=since, hosts=hosts, source=source)
+    # LLM 옵션
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
+    api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
+    debug_enabled = args.debug
+
+    question = read_prompt_from_args_or_stdin(args.prompt, getattr(args, "message", None))
+
+    rows = kiki_query_metrics_since(db_path, since_sec=since, hosts=hosts, source=source)
 
     if args.raw:
-        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        print(_json.dumps(rows, ensure_ascii=False, indent=2))
         return
 
     if not rows:
@@ -745,12 +936,12 @@ In Korean, summarize:
 아래는 최근 {since}초 동안 수집된 메트릭 데이터입니다.
 JSON 배열이며, 각 항목은 하나의 샘플입니다.
 
-{json.dumps(rows, ensure_ascii=False, indent=2)}
+{_json.dumps(rows, ensure_ascii=False, indent=2)}
 """.strip()
 
-    if args.debug:
-        debug("[health-ai] system_prompt:\n" + system_prompt, True)
-        debug("[health-ai] user_prompt(head):\n" + user_prompt[:2000], True)
+    if debug_enabled:
+        debug("system_prompt:\n" + system_prompt, True)
+        debug("user_prompt(head):\n" + user_prompt[:2000], True)
 
     answer = call_llm_chat(
         base_url=base_url,
@@ -758,31 +949,31 @@ JSON 배열이며, 각 항목은 하나의 샘플입니다.
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         api_key=api_key,
-        debug_enabled=args.debug,
+        debug_enabled=debug_enabled,
     )
     print(answer)
 
 
-def cmd_log_ai(args: argparse.Namespace) -> None:
-    """
-    kiki log-ai
+# ─────────────────────────────────────────────
+# log-ai: 외부 txt 로그 파일 / stdin 분석
+# ─────────────────────────────────────────────
 
-    - 외부 txt 로그 파일 / stdin 로그를 LLM으로 분석.
-    """
+def cmd_log_ai(args: argparse.Namespace) -> None:
     import re
 
-    from health_core import tail_file
+    # LLM 옵션
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
+    api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
+    debug_enabled = args.debug
 
-    base_url = args.base_url
-    model = args.model
-    api_key = args.api_key
-    question = args.prompt
+    question = read_prompt_from_args_or_stdin(args.prompt, getattr(args, "message", None))
     max_lines = args.max_lines
     grep_pattern = args.grep
 
     # 1) 입력 소스 결정: --file 또는 stdin
     if args.file:
-        text = tail_file(args.file, max_lines=max_lines)
+        text = kiki_tail_file(args.file, max_lines=max_lines)
     else:
         if sys.stdin.isatty():
             print("[KIKI][log-ai] 파일을 지정하거나, 파이프/리다이렉트로 로그를 전달하세요.", file=sys.stderr)
@@ -821,9 +1012,9 @@ If the user asks for specific filtering or summarization, follow that.
 </log>
 """.strip()
 
-    if args.debug:
-        debug("[log-ai] system_prompt:\n" + system_prompt, True)
-        debug("[log-ai] user_prompt(head):\n" + user_prompt[:2000], True)
+    if debug_enabled:
+        debug("system_prompt:\n" + system_prompt, True)
+        debug("user_prompt(head):\n" + user_prompt[:2000], True)
 
     answer = call_llm_chat(
         base_url=base_url,
@@ -831,7 +1022,7 @@ If the user asks for specific filtering or summarization, follow that.
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         api_key=api_key,
-        debug_enabled=args.debug,
+        debug_enabled=debug_enabled,
     )
     print(answer)
 
@@ -990,7 +1181,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_heat.set_defaults(func=cmd_gen_heat)
 
 
-
     # health-collect
     p_hc = subparsers.add_parser(
         "health-collect",
@@ -1004,7 +1194,6 @@ def build_parser() -> argparse.ArgumentParser:
     g_hc = p_hc.add_mutually_exclusive_group()
     g_hc.add_argument("--profile", default="basic", help="내장 헬스 프로파일 이름")
     g_hc.add_argument("--playbook", help="사용자 정의 health playbook 경로")
-    p_hc.add_argument("--debug", action="store_true")
     p_hc.set_defaults(func=cmd_health_collect)
 
     # health-ai
@@ -1014,16 +1203,13 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawTextHelpFormatter,
     )
     add_common_flags(p_hai)
-    p_hai.add_argument("prompt", help="LLM에 전달할 질문/요청 문장")
+    add_prompt_args(p_hai)
+    add_llm_common_args(p_hai)
     p_hai.add_argument("--db", default="/data/kiki/metrics.db", help="SQLite DB 경로")
     p_hai.add_argument("--since", type=int, default=600, help="최근 N초 동안의 데이터만 분석 (기본 600)")
     p_hai.add_argument("--hosts", help="호스트 필터 (콤마 구분)")
     p_hai.add_argument("--source", help="source 필터 (ex: k8s-node)")
-    p_hai.add_argument("--base-url", default="http://127.0.0.1:8082", help="LLM base URL")
-    p_hai.add_argument("--model", default="local-llama", help="LLM 모델 이름")
-    p_hai.add_argument("--api-key", help="LLM API 키 (필요 시)")
     p_hai.add_argument("--raw", action="store_true", help="LLM 호출 대신 raw JSON만 출력")
-    p_hai.add_argument("--debug", action="store_true")
     p_hai.set_defaults(func=cmd_health_ai)
 
     # log-ai
@@ -1033,14 +1219,11 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawTextHelpFormatter,
     )
     add_common_flags(p_lai)
-    p_lai.add_argument("prompt", help="LLM에 전달할 질문/요청 문장")
+    add_prompt_args(p_lai)
+    add_llm_common_args(p_lai)
     p_lai.add_argument("--file", help="분석할 로그 파일 경로 (없으면 stdin 사용)")
     p_lai.add_argument("--max-lines", type=int, default=2000, help="최대 몇 줄까지 사용할지")
     p_lai.add_argument("--grep", help="사전 필터용 grep 패턴 (정규식)")
-    p_lai.add_argument("--base-url", default="http://127.0.0.1:8082", help="LLM base URL")
-    p_lai.add_argument("--model", default="local-llama", help="LLM 모델 이름")
-    p_lai.add_argument("--api-key", help="LLM API 키 (필요 시)")
-    p_lai.add_argument("--debug", action="store_true")
     p_lai.set_defaults(func=cmd_log_ai)
 
     return parser
