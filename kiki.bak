@@ -43,8 +43,6 @@ from pathlib import Path
 import textwrap
 import json
 from typing import Optional
-import subprocess
-import shlex
 
 # optional deps
 try:
@@ -415,39 +413,6 @@ def cmd_ansible_ai(args: argparse.Namespace) -> None:
     else:
         print(yaml_text)
 
-    # ─────────────────────────────────────────
-    # --apply: 생성 직후 ansible-playbook 실행
-    # ─────────────────────────────────────────
-    if getattr(args, "apply", False):
-        if target == "heat":
-            print("[ERROR] --apply는 Heat 템플릿(target=heat)에서는 지원하지 않습니다.", file=sys.stderr)
-            sys.exit(1)
-
-        if not args.out:
-            print("[ERROR] --apply를 사용하려면 --out으로 플레이북 파일 경로를 지정해야 합니다.", file=sys.stderr)
-            sys.exit(1)
-
-        if not args.inventory:
-            print("[ERROR] --apply를 사용하려면 --inventory에 Ansible 인벤토리를 지정해야 합니다.", file=sys.stderr)
-            sys.exit(1)
-
-        out_path = Path(args.out)
-        inv = args.inventory
-
-        cmd = ["ansible-playbook", "-i", inv, str(out_path)]
-        debug_print(debug_enabled, "실행 명령: " + " ".join(shlex.quote(c) for c in cmd))
-
-        try:
-            result = subprocess.run(cmd)
-        except FileNotFoundError:
-            print("[ERROR] ansible-playbook 명령을 찾을 수 없습니다. Ansible이 설치되어 있는지 확인하세요.", file=sys.stderr)
-            sys.exit(1)
-
-        if result.returncode != 0:
-            print(f"[ERROR] ansible-playbook 실행이 실패했습니다. (exit={result.returncode})", file=sys.stderr)
-            sys.exit(result.returncode)
-
-
 
 def cmd_yaml_ai(args: argparse.Namespace) -> None:
     """자연어 → 순수 Kubernetes / Heat YAML 생성 (옵션: yaml-k8s, yaml-osp)"""
@@ -518,39 +483,6 @@ def cmd_yaml_ai(args: argparse.Namespace) -> None:
         write_file(out_path, yaml_text, force=args.force, debug_enabled=debug_enabled)
     else:
         print(yaml_text)
-
-    # ─────────────────────────────────────────
-    # --apply: 생성 직후 kubectl apply 실행
-    # ─────────────────────────────────────────
-    if getattr(args, "apply", False):
-        if mode != "yaml-k8s":
-            print("[ERROR] --apply는 현재 yaml-k8s 모드에서만 지원됩니다.", file=sys.stderr)
-            sys.exit(1)
-
-        debug_print(debug_enabled, "--apply: kubectl apply 실행 준비")
-
-        if args.out:
-            manifest_path = Path(args.out)
-            cmd = ["kubectl", "apply", "-f", str(manifest_path)]
-            debug_print(debug_enabled, "실행 명령: " + " ".join(shlex.quote(c) for c in cmd))
-            try:
-                result = subprocess.run(cmd)
-            except FileNotFoundError:
-                print("[ERROR] kubectl 명령을 찾을 수 없습니다. PATH를 확인해 주세요.", file=sys.stderr)
-                sys.exit(1)
-        else:
-            cmd = ["kubectl", "apply", "-f", "-"]
-            debug_print(debug_enabled, "실행 명령 (stdin): " + " ".join(shlex.quote(c) for c in cmd))
-            try:
-                result = subprocess.run(cmd, input=yaml_text.encode("utf-8"))
-            except FileNotFoundError:
-                print("[ERROR] kubectl 명령을 찾을 수 없습니다. PATH를 확인해 주세요.", file=sys.stderr)
-                sys.exit(1)
-
-        if result.returncode != 0:
-            print(f"[ERROR] kubectl apply 실패 (exit={result.returncode})", file=sys.stderr)
-            sys.exit(resultreturncode)
-
 
 
 # ─────────────────────────────────────────────
@@ -678,36 +610,6 @@ def cmd_gen_k8s(args: argparse.Namespace) -> None:
         write_file(out_path, content, force=args.force, debug_enabled=debug_enabled)
     else:
         print(content)
-        out_path = None  # stdout 출력만 했을 때 표시용
-
-    # ─────────────────────────────────────────
-    # --apply: 즉시 kubectl apply 실행
-    # ─────────────────────────────────────────
-    if getattr(args, "apply", False):
-        debug_print(debug_enabled, "--apply: kubectl apply 실행 준비")
-
-        if args.out:
-            manifest_path = Path(args.out)
-            cmd = ["kubectl", "apply", "-f", str(manifest_path)]
-            debug_print(debug_enabled, "실행 명령: " + " ".join(shlex.quote(c) for c in cmd))
-            try:
-                result = subprocess.run(cmd)
-            except FileNotFoundError:
-                print("[ERROR] kubectl 명령을 찾을 수 없습니다. PATH를 확인해 주세요.", file=sys.stderr)
-                sys.exit(1)
-        else:
-            cmd = ["kubectl", "apply", "-f", "-"]
-            debug_print(debug_enabled, "실행 명령 (stdin): " + " ".join(shlex.quote(c) for c in cmd))
-            try:
-                result = subprocess.run(cmd, input=content.encode("utf-8"))
-            except FileNotFoundError:
-                print("[ERROR] kubectl 명령을 찾을 수 없습니다. PATH를 확인해 주세요.", file=sys.stderr)
-                sys.exit(1)
-
-        if result.returncode != 0:
-            print(f"[ERROR] kubectl apply 실패 (exit={resultreturncode})", file=sys.stderr)
-            sys.exit(result.returncode)
-
 
 
 # ─────────────────────────────────────────────
@@ -765,32 +667,6 @@ def cmd_gen_heat(args: argparse.Namespace) -> None:
         write_file(out_path, content, force=args.force, debug_enabled=debug_enabled)
     else:
         print(content)
-        out_path = None
-
-    # ─────────────────────────────────────────
-    # --apply: openstack stack create 실행
-    # ─────────────────────────────────────────
-    if getattr(args, "apply", False):
-        if not args.out:
-            print("[ERROR] gen-heat에서 --apply를 사용하려면 --out으로 템플릿 파일 경로를 지정해야 합니다.", file=sys.stderr)
-            sys.exit(1)
-
-        stack_name = args.name
-        template_path = Path(args.out)
-
-        cmd = ["openstack", "stack", "create", stack_name, "-t", str(template_path)]
-        debug_print(debug_enabled, "실행 명령: " + " ".join(shlex.quote(c) for c in cmd))
-
-        try:
-            result = subprocess.run(cmd)
-        except FileNotFoundError:
-            print("[ERROR] openstack 명령을 찾을 수 없습니다. OpenStack CLI 설치 및 환경 변수를 확인하세요.", file=sys.stderr)
-            sys.exit(1)
-
-        if result.returncode != 0:
-            print(f"[ERROR] openstack stack create 실패 (exit={result.returncode})", file=sys.stderr)
-            sys.exit(result.returncode)
-
 
 
 # ─────────────────────────────────────────────
@@ -895,11 +771,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         help="결과 YAML을 저장할 파일 경로 (생략 시 stdout으로 출력)",
     )
-    p_ai.add_argument(
-        "--apply",
-        action="store_true",
-        help="생성 후 ansible-playbook으로 즉시 실행 (--out, --inventory 필요, Heat 제외)",
-    )
     p_ai.set_defaults(func=cmd_ansible_ai)
 
     # ansible-k8s (alias)
@@ -925,12 +796,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         help="결과 YAML 파일 경로",
     )
-
-    p_ai_k8s.add_argument(
-        "--apply",
-        action="store_true",
-        help="생성 후 ansible-playbook으로 즉시 실행 (--out, --inventory 필요)",
-    )
     p_ai_k8s.set_defaults(func=cmd_ansible_ai, ansible_target="k8s")
 
     # ansible-osp (alias)
@@ -955,11 +820,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_ai_osp.add_argument(
         "--out",
         help="결과 YAML 파일 경로",
-    )
-    p_ai_osp.add_argument(
-        "--apply",
-        action="store_true",
-        help="생성 후 ansible-playbook으로 즉시 실행 (--out, --inventory 필요)",
     )
     p_ai_osp.set_defaults(func=cmd_ansible_ai, ansible_target="osp")
 
@@ -988,12 +848,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_yaml.add_argument(
         "--out",
         help="결과 YAML을 저장할 파일 경로 (생략 시 stdout으로 출력)",
-    )
-
-    p_yaml.add_argument(
-        "--apply",
-        action="store_true",
-        help="생성 후 kubectl apply -f 로 바로 적용 (현재 yaml-k8s 모드만 지원)",
     )
     p_yaml.set_defaults(func=cmd_yaml_ai)
     # gen-role
@@ -1032,11 +886,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="생성된 YAML 문법 검증(Python에서 로컬 체크)",
     )
-    p_k8s.add_argument(
-        "--apply",
-        action="store_true",
-        help="생성 후 kubectl apply -f 로 바로 적용",
-    )
     p_k8s.set_defaults(func=cmd_gen_k8s)
 
     # gen-heat
@@ -1048,12 +897,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_flags(p_heat)
     p_heat.add_argument("--name", required=True, help="Heat stack 이름")
     p_heat.add_argument("--out", help="출력 파일 경로 (생략 시 stdout)")
-    p_heat.add_argument(
-        "--apply",
-        action="store_true",
-        help="생성 후 openstack stack create 로 바로 스택 생성 (--out 필수, OpenStack CLI 환경 필요)",
-    )
     p_heat.set_defaults(func=cmd_gen_heat)
+
     return parser
 
 
