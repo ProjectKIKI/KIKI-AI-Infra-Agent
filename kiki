@@ -14,7 +14,8 @@ KIKI v3 - Infra Code / YAML / Playbook Generator CLI
     --inventory "node1,node2,node3" \
     --verify all \
     --out playbooks/httpd.yml \
-    --confirm
+    --confirm \
+    --apply
 
   # alias
   kiki ansible-k8s "자연어"   # = ansible-ai --target k8s
@@ -216,6 +217,48 @@ def call_llm_chat(
 
 
 # ─────────────────────────────────────────────
+# ansible-playbook 실행 (apply)
+# ─────────────────────────────────────────────
+
+def run_ansible_playbook(playbook_path: Path, inventory: Optional[str], debug_enabled: bool) -> None:
+    """
+    생성된 YAML playbook을 ansible-playbook으로 실행한다.
+    - inventory가 파일 경로면 그대로 -i에 사용
+    - inventory가 'host1,host2' 형태면 임시 인벤토리 파일을 만들어 사용
+    """
+    import subprocess
+    import tempfile
+
+    cmd = ["ansible-playbook", str(playbook_path)]
+    inv_file = None
+
+    if inventory:
+        inv_str = inventory.strip()
+        if inv_str:
+            # inventory 문자열이 실제 파일 경로인가?
+            if os.path.exists(inv_str):
+                cmd.extend(["-i", inv_str])
+            else:
+                # 콤마 구분 호스트 리스트로 가정
+                hosts = [h.strip() for h in inv_str.split(",") if h.strip()]
+                if hosts:
+                    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as f:
+                        f.write("[all]\n")
+                        for h in hosts:
+                            f.write(h + "\n")
+                        inv_file = f.name
+                    debug(f"inline inventory → temp file {inv_file}", debug_enabled)
+                    cmd.extend(["-i", inv_file])
+
+    debug(f"run: {' '.join(cmd)}", debug_enabled)
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] ansible-playbook 실패 (rc={e.returncode})", file=sys.stderr)
+        sys.exit(e.returncode)
+
+
+# ─────────────────────────────────────────────
 # chat
 # ─────────────────────────────────────────────
 
@@ -359,16 +402,36 @@ def cmd_ansible_ai(args: argparse.Namespace) -> None:
         print("========== 생성된 YAML (preview) ==========")
         print(yaml_text)
         print("===========================================")
-        if not confirm_action("이 내용을 출력/저장할까요?"):
+        msg = "이 내용을 출력/저장"
+        if getattr(args, "apply", False):
+            msg += " 및 ansible-playbook으로 적용"
+        msg += "할까요?"
+        if not confirm_action(msg):
             print("[INFO] 사용자 취소로 작업 중단됨.")
             sys.exit(0)
 
-    # 출력 처리
+    # 출력 처리 + apply용 경로 준비
+    playbook_path: Optional[Path] = None
+
     if args.out:
         out_path = Path(args.out)
         write_file(out_path, yaml_text, force=args.force, debug_enabled=debug_enabled)
+        playbook_path = out_path
     else:
         print(yaml_text)
+
+    # apply 실행
+    if getattr(args, "apply", False):
+        if playbook_path is None:
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".yml", delete=False, encoding="utf-8"
+            ) as tf:
+                tf.write(yaml_text)
+                playbook_path = Path(tf.name)
+            print(f"[INFO] apply를 위해 임시 파일 생성: {playbook_path}", file=sys.stderr)
+            debug(f"temp playbook path={playbook_path}", debug_enabled)
+        run_ansible_playbook(playbook_path, inventory=inventory, debug_enabled=debug_enabled)
 
 
 # ─────────────────────────────────────────────
@@ -625,7 +688,6 @@ def add_common_flags(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="실행 전에 사용자 확인을 요청합니다.",
     )
-
 
 
 # ─────────────────────────────────────────────
@@ -1026,6 +1088,7 @@ If the user asks for specific filtering or summarization, follow that.
     )
     print(answer)
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kiki",
@@ -1067,7 +1130,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_ai.add_argument(
         "--inventory",
-        help="인벤토리 정보 (호스트/그룹 문자열, LLM 컨텍스트용)",
+        help="인벤토리 정보 (호스트/그룹 문자열, LLM 컨텍스트 및 apply 시 -i 용도로 사용 가능)",
     )
     p_ai.add_argument(
         "--verify",
@@ -1078,6 +1141,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_ai.add_argument(
         "--out",
         help="결과 YAML을 저장할 파일 경로 (생략 시 stdout으로 출력)",
+    )
+    p_ai.add_argument(
+        "--apply",
+        action="store_true",
+        help="생성된 YAML을 ansible-playbook으로 즉시 실행합니다.",
     )
     p_ai.set_defaults(func=cmd_ansible_ai)
 
@@ -1104,6 +1172,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         help="결과 YAML 파일 경로",
     )
+    p_ai_k8s.add_argument(
+        "--apply",
+        action="store_true",
+        help="생성된 YAML을 ansible-playbook으로 즉시 실행합니다.",
+    )
     p_ai_k8s.set_defaults(func=cmd_ansible_ai, ansible_target="k8s")
 
     # ansible-osp (alias)
@@ -1128,6 +1201,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_ai_osp.add_argument(
         "--out",
         help="결과 YAML 파일 경로",
+    )
+    p_ai_osp.add_argument(
+        "--apply",
+        action="store_true",
+        help="생성된 YAML을 ansible-playbook으로 즉시 실행합니다.",
     )
     p_ai_osp.set_defaults(func=cmd_ansible_ai, ansible_target="osp")
 
@@ -1179,7 +1257,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_heat.add_argument("--name", required=True, help="Heat 스택/템플릿 이름 prefix")
     p_heat.add_argument("--out", help="출력 파일 경로 (생략 시 stdout)")
     p_heat.set_defaults(func=cmd_gen_heat)
-
 
     # health-collect
     p_hc = subparsers.add_parser(
