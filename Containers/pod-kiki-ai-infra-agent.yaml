@@ -19,7 +19,7 @@ spec:
              "--temp 0.0",             # 단순 작업 위주
              "--repeat-penalty 1.0",   # 바보가 되거라!
               # ▼ CPU 성능 관련 옵션
-             "--threads","4"           # 물리코어(or 논리코어) 수에 맞게 조정
+             "--threads","4",          # 물리코어(or 논리코어) 수에 맞게 조정
              "--batch-size","1024",    # 한 번에 처리할 토큰 배치 크기
              "--ubatch-size","128",    # 내부 마이크로 배치, 너무 크면 레이턴시 증가
              "--numa","distribute"     # 멀티 소켓이면 NUMA 분산
@@ -31,7 +31,7 @@ spec:
 
     ## 간단한 파이썬 에이전트
     - name: ansible-agent
-      image: localhost/kiki-ai-infra-agent:latest
+      image: localhost/kiki-llm/kiki-ai-infra-agent:latest
       env:
         - name: MODEL_URL
           value: http://127.0.0.1:8080/v1
@@ -51,7 +51,7 @@ spec:
 
     ## 웹 페이지 컨테이너(테스트용)
     - name: kiki-web
-      image: localhost/kiki-web:latest
+      image: localhost/kiki-llm/kiki-web:latest
       env:
         # 웹에서 LLM/모델 접속 설정
         - name: KIKI_LLM_BASE_URL

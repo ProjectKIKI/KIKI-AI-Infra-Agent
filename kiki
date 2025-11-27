@@ -671,7 +671,6 @@ def add_prompt_args(p: argparse.ArgumentParser) -> None:
         help="자연어 프롬프트 (prompt와 동일, 스크립트 호출용)",
     )
 
-
 def add_common_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--debug",
@@ -688,6 +687,26 @@ def add_common_flags(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="실행 전에 사용자 확인을 요청합니다.",
     )
+
+def add_llm_common_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--base-url",
+        help="LLM 서버 base URL (기본: env KIKI_LLM_BASE_URL 또는 http://127.0.0.1:8082)",
+    )
+    p.add_argument(
+        "--model",
+        help="LLM 모델 이름 (기본: env KIKI_LLM_MODEL 또는 local-model)",
+    )
+    p.add_argument(
+        "--api-key",
+        help="API 키 (필요 시, env KIKI_LLM_API_KEY 사용 가능)",
+    )
+    p.add_argument(
+        "--profile",
+        choices=["inference", "reasoning"],
+        help="LLM 프로파일 (inference=빠르고 결정적, reasoning=추론 강화)",
+    )
+
 
 
 # ─────────────────────────────────────────────

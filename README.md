@@ -14,6 +14,8 @@
 + 오픈스택 통합(준비중)
 + 운영체제 통합(준비중)
 
+야, 최국현 rocky, alma 9 이미지 다시 리빌드 해라. 잊지마라. 
+
 ---
 
 ## 1. 프로젝트 개요
@@ -235,7 +237,8 @@ spec:
 
 ```bash
 dnf install -y container-tools
-buildah bud -t localhost/kiki-ai-infra-agent:latest -f Containers/Containerfile.agent
+buildah bud -t localhost/kiki-llm/kiki-ai-infra-agent:latest -f Containers/Containerfile.agent
+buildah bud -t localhost/kiki-llm/kiki-ai-infra-agent:latest -f Containers/Containerfile.web
 ```
 
 ---
