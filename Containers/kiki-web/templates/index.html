@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>KIKI Web</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>KIKI Web Console</h1>
+    <p>LLM + Infra 코드 생성 웹 버전 (아름이 분신 💚)</p>
+  </header>
+
+  <main>
+    <section class="tabs">
+      <button class="tab-button active" data-tab="chat">Chat</button>
+      <button class="tab-button" data-tab="ansible-ai">Ansible-AI</button>
+    </section>
+
+    <!-- Chat 탭 -->
+    <section id="tab-chat" class="tab-content active">
+      <h2>Chat</h2>
+      <form id="chat-form">
+        <label>프롬프트</label>
+        <textarea name="prompt" id="chat-prompt" rows="5" placeholder="여기에 질문이나 대화를 입력하세요."></textarea>
+        <button type="submit">보내기</button>
+      </form>
+      <h3>응답</h3>
+      <pre id="chat-reply"></pre>
+    </section>
+
+    <!-- Ansible-AI 탭 -->
+    <section id="tab-ansible-ai" class="tab-content">
+      <h2>Ansible / K8s / OSP / Heat 코드 생성</h2>
+      <form id="ansible-ai-form">
+        <label>Target</label>
+        <select name="target" id="target">
+          <option value="ansible">Ansible</option>
+          <option value="k8s">Kubernetes (Ansible)</option>
+          <option value="osp">OpenStack (Ansible)</option>
+          <option value="heat">Heat Template</option>
+        </select>
+
+        <label>Inventory (선택)</label>
+        <input type="text" name="inventory" id="inventory" placeholder="node1,node2 또는 /path/to/inventory" />
+
+        <label>Verify (형식 검증 수준)</label>
+        <select name="verify" id="verify">
+          <option value="none">none</option>
+          <option value="syntax">syntax</option>
+          <option value="all">all</option>
+        </select>
+
+        <label>자연어 설명</label>
+        <textarea name="prompt" id="ansible-prompt" rows="6"
+          placeholder="예) 웹 서버 2대, 로드밸런서 1대, security group 열어줘"></textarea>
+
+        <button type="submit">YAML 생성</button>
+      </form>
+
+      <h3>생성된 YAML</h3>
+      <pre id="ansible-yaml"></pre>
+    </section>
+  </main>
+
+  <script>
+    // 탭 전환
+    const tabButtons = document.querySelectorAll(".tab-button");
+    const tabContents = document.querySelectorAll(".tab-content");
+    tabButtons.forEach(btn => {
+      btn.addEventListener("click", () => {
+        tabButtons.forEach(b => b.classList.remove("active"));
+        tabContents.forEach(c => c.classList.remove("active"));
+        btn.classList.add("active");
+        const id = "tab-" + btn.dataset.tab;
+        document.getElementById(id).classList.add("active");
+      });
+    });
+
+    // Chat form
+    const chatForm = document.getElementById("chat-form");
+    const chatReply = document.getElementById("chat-reply");
+
+    chatForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      chatReply.textContent = "생각 중... 아름이가 머리 굴리는 중 🧠";
+      const formData = new FormData(chatForm);
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        body: formData
+      });
+      const data = await res.json();
+      if (data.ok) {
+        chatReply.textContent = data.reply;
+      } else {
+        chatReply.textContent = "ERROR: " + data.error;
+      }
+    });
+
+    // Ansible-AI form
+    const aiForm = document.getElementById("ansible-ai-form");
+    const aiYaml = document.getElementById("ansible-yaml");
+
+    aiForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      aiYaml.textContent = "YAML 생성 중... 🧱";
+      const formData = new FormData(aiForm);
+      const res = await fetch("/api/ansible-ai", {
+        method: "POST",
+        body: formData
+      });
+      const data = await res.json();
+      if (data.ok) {
+        aiYaml.textContent = data.yaml;
+      } else {
+        aiYaml.textContent = "ERROR: " + data.error;
+      }
+    });
+  </script>
+</body>
+</html>

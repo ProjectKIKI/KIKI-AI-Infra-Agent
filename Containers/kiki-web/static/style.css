@@ -1,0 +1,104 @@
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin: 0;
+  padding: 0;
+  background: #0f172a;
+  color: #e5e7eb;
+}
+
+header {
+  padding: 1rem 2rem;
+  background: #020617;
+  border-bottom: 1px solid #1e293b;
+}
+
+h1 {
+  margin: 0 0 0.2rem 0;
+  font-size: 1.5rem;
+}
+
+main {
+  padding: 1rem 2rem 2rem;
+}
+
+.tabs {
+  margin-bottom: 1rem;
+}
+
+.tab-button {
+  border: none;
+  padding: 0.5rem 1rem;
+  margin-right: 0.5rem;
+  border-radius: 9999px;
+  background: #1e293b;
+  color: #e5e7eb;
+  cursor: pointer;
+}
+
+.tab-button.active {
+  background: #22c55e;
+  color: #020617;
+  font-weight: 600;
+}
+
+.tab-content {
+  display: none;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: #020617;
+  border: 1px solid #1e293b;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+label {
+  font-size: 0.9rem;
+  color: #9ca3af;
+}
+
+textarea,
+input,
+select {
+  border-radius: 0.5rem;
+  border: 1px solid #1f2937;
+  background: #020617;
+  color: #e5e7eb;
+  padding: 0.5rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+
+button[type="submit"] {
+  margin-top: 0.5rem;
+  align-self: flex-start;
+  border: none;
+  border-radius: 9999px;
+  background: #22c55e;
+  color: #020617;
+  padding: 0.4rem 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button[type="submit"]:hover {
+  background: #16a34a;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #020617;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid #1f2937;
+  font-size: 0.85rem;
+}
