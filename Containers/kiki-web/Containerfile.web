@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    LANG=C.UTF-8
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN python -m pip install --upgrade pip && \
+    python -m pip install fastapi \"uvicorn[standard]\" jinja2 requests
+
+COPY app.py kiki_core.py /app/
+COPY templates /app/templates
+COPY static /app/static
+
+ENV KIKI_LLM_BASE_URL=\"http://127.0.0.1:8080\" \
+    KIKI_LLM_MODEL=\"local-llama\"
+
+EXPOSE 8090
+
+CMD [\"uvicorn\", \"app:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8090\"]
