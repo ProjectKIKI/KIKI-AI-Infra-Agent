@@ -13,17 +13,16 @@ spec:
     ## llama.cpp 서버
     - name: llama-server
       image: ghcr.io/ggerganov/llama.cpp:server
-      args: ["--model","/models/data.gguf",
-             "--host","0.0.0.0","--port","8080",
-             "--ctx-size","8192","--n-gpu-layers","0",
-             "--temp 0.0",             # 단순 작업 위주
-             "--repeat-penalty 1.0",   # 바보가 되거라!
-              # ▼ CPU 성능 관련 옵션
-             "--threads","4",          # 물리코어(or 논리코어) 수에 맞게 조정
-             "--batch-size","1024",    # 한 번에 처리할 토큰 배치 크기
-             "--ubatch-size","128",    # 내부 마이크로 배치, 너무 크면 레이턴시 증가
-             "--numa","distribute"     # 멀티 소켓이면 NUMA 분산
-           ]
+args: ["--model","/models/data.gguf",
+       "--host","0.0.0.0","--port","8080",
+       "--ctx-size","8192","--n-gpu-layers","0",
+       "--temp","0.2",
+       "--repeat-penalty","1.05",   ## 바보거 되거라!!
+       "--threads","4",
+       "--batch-size","512",
+       "--ubatch-size","64",
+       "--numa","distribute"
+     ]
       volumeMounts:
         - name: models
           mountPath: /models/data.gguf

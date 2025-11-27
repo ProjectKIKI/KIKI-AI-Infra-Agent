@@ -13,21 +13,17 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Python 의존성
-# (필요 시 requirements.txt로 분리 가능)
 RUN python -m pip install --upgrade pip && \
-    python -m pip install fastapi uvicorn jinja2 requests
+    python -m pip install fastapi "uvicorn[standard]" jinja2 requests python-multipart && \
+    python -m pip install python-multipart
 
-# 애플리케이션 복사
-# (로컬에서 빌드할 때 이 파일들이 있는 디렉터리에서 podman build 실행)
-COPY app.py kiki_core.py /app/
-COPY templates /app/templates
-COPY static /app/static
+COPY Containers/kiki-web/app.py Containers/kiki-web/kiki_core.py /app/
+COPY Containers/kiki-web/templates /app/templates
+COPY Containers/kiki-web/static /app/static
 
-# 기본 환경변수 (Pod에서 override 가능)
-ENV KIKI_LLM_BASE_URL="http://127.0.0.1:8080" \
-    KIKI_LLM_MODEL="local-llama"
+ENV KIKI_LLM_BASE_URL=\"http://127.0.0.1:8080\" \
+    KIKI_LLM_MODEL=\"local-llama\"
 
 EXPOSE 8090
 
-# prod 모드용 uvicorn 실행
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090"]
