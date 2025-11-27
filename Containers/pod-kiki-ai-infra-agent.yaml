@@ -5,24 +5,31 @@ metadata:
 spec:
   hostNetwork: true
   restartPolicy: Always
+
+  ## 이거 왜 적용이 안되지?
   network:
     - name: podman
   containers:
+    ## llama.cpp 서버
     - name: llama-server
       image: ghcr.io/ggerganov/llama.cpp:server
       args: ["--model","/models/data.gguf",
              "--host","0.0.0.0","--port","8080",
-             "--ctx-size","4096","--n-gpu-layers","0",
+             "--ctx-size","8192","--n-gpu-layers","0",
+             "--temp 0.0",             # 단순 작업 위주
+             "--repeat-penalty 1.0",   # 바보가 되거라!
               # ▼ CPU 성능 관련 옵션
-             "--threads","8",        # 물리코어(or 논리코어) 수에 맞게 조정
-             "--batch-size","512",    # 한 번에 처리할 토큰 배치 크기
-             "--ubatch-size","32",    # 내부 마이크로 배치, 너무 크면 레이턴시 증가
-             "--numa","distribute"    # 멀티 소켓이면 NUMA 분산
+             "--threads","4"           # 물리코어(or 논리코어) 수에 맞게 조정
+             "--batch-size","1024",    # 한 번에 처리할 토큰 배치 크기
+             "--ubatch-size","128",    # 내부 마이크로 배치, 너무 크면 레이턴시 증가
+             "--numa","distribute"     # 멀티 소켓이면 NUMA 분산
            ]
       volumeMounts:
         - name: models
           mountPath: /models/data.gguf
           readOnly: true
+
+    ## 간단한 파이썬 에이전트
     - name: ansible-agent
       image: localhost/kiki-ai-infra-agent:latest
       env:
@@ -41,6 +48,27 @@ spec:
       ports:
         - containerPort: 8082
           hostPort: 8082
+
+    ## 웹 페이지 컨테이너(테스트용)
+    - name: kiki-web
+      image: localhost/kiki-web:latest
+      env:
+        # 웹에서 LLM/모델 접속 설정
+        - name: KIKI_LLM_BASE_URL
+          value: http://127.0.0.1:8080
+        - name: KIKI_LLM_MODEL
+          value: local-llama
+        ## API KEY
+        # - name: KIKI_LLM_API_KEY
+        #   value: sk-noauth
+      ports:
+        - containerPort: 8090
+          hostPort: 8090
+      # 나중에 로그 뷰어나 기타 기능 붙일 때 쓸 수 있으니 work 볼륨 정도는 선택적으로 마운트 가능
+      volumeMounts:
+        - name: work
+          mountPath: /work
+
   volumes:
     - name: models
       hostPath:
