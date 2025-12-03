@@ -1,83 +1,113 @@
 apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kiki-models-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # 필요하면 storageClassName 지정
+  # storageClassName: nfs-client
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kiki-agent-db-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName: nfs-client
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kiki-work
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName: nfs-client  
+
+---
+apiVersion: v1
 kind: Pod
 metadata:
   name: kiki-ai-infra-agent
 spec:
   hostNetwork: true
   restartPolicy: Always
-
-  ## 이거 왜 적용이 안되지?
-  network:
-    - name: podman
+  network: podman
   containers:
-    ## llama.cpp 서버
+    # 1) llama.cpp 서버
     - name: llama-server
       image: ghcr.io/ggerganov/llama.cpp:server
-args: ["--model","/models/data.gguf",
-       "--host","0.0.0.0","--port","8080",
-       "--ctx-size","8192","--n-gpu-layers","0",
-       "--temp","0.2",
-       "--repeat-penalty","1.05",   ## 바보거 되거라!!
-       "--threads","4",
-       "--batch-size","512",
-       "--ubatch-size","64",
-       "--numa","distribute"
-     ]
+      args: ["--model","/models/data.gguf",
+             "--host","0.0.0.0","--port","8080",
+             "--ctx-size","8192","--n-gpu-layers","0"]
       volumeMounts:
         - name: models
-          mountPath: /models/data.gguf
-          readOnly: true
+          mountPath: /models
 
-    ## 간단한 파이썬 에이전트
-    - name: ansible-agent
+    # 2) KIKI agentd (login / history / RAG)
+    - name: kiki-agentd
       image: localhost/kiki-llm/kiki-ai-infra-agent:latest
+      ports:
+        - containerPort: 8082
       env:
-        - name: MODEL_URL
-          value: http://127.0.0.1:8080/v1
-        - name: API_KEY
-          value: sk-noauth
-        - name: WORK_DIR
-          value: /work
+        - name: KIKI_UPSTREAM_LLM_BASE_URL
+          value: "http://127.0.0.1:8080"
+        - name: KIKI_LLM_MODEL
+          value: "local-llama"
+        - name: KIKI_AGENT_DB_PATH
+          value: "/app/data/kiki_agent.db"
       volumeMounts:
         - name: sshkeys
           mountPath: /home/agent/.ssh
-          readOnly: true
         - name: work
           mountPath: /work
+        - name: agent-db
+          mountPath: /app/data
+
+    # 3) Web UI
+    - name: kiki-web
+      image: localhost/kiki-llm/kiki-web:latest
       ports:
         - containerPort: 8082
           hostPort: 8082
-
-    ## 웹 페이지 컨테이너(테스트용)
-    - name: kiki-web
-      image: localhost/kiki-llm/kiki-web:latest
       env:
-        # 웹에서 LLM/모델 접속 설정
-        - name: KIKI_LLM_BASE_URL
-          value: http://127.0.0.1:8080
-        - name: KIKI_LLM_MODEL
-          value: local-llama
-        ## API KEY
-        # - name: KIKI_LLM_API_KEY
-        #   value: sk-noauth
-      ports:
-        - containerPort: 8090
-          hostPort: 8090
-      # 나중에 로그 뷰어나 기타 기능 붙일 때 쓸 수 있으니 work 볼륨 정도는 선택적으로 마운트 가능
+        - name: KIKI_AGENT_BASE_URL
+          value: "http://127.0.0.1:8082"
       volumeMounts:
         - name: work
           mountPath: /work
 
   volumes:
+    # GGUF 모델 (PVC)
     - name: models
-      hostPath:
-        path: /root/models/data.gguf  ## model 파일이 있는 위치(호스트 컴퓨터)
-        type: File
+      persistentVolumeClaim:
+        claimName: kiki-models-pvc
+
+    # SSH 키 (여기는 hostPath 유지, 필요하면 PVC로 따로 분리 가능)
     - name: sshkeys
       hostPath:
         path: /root/.ssh
         type: Directory
+
+    # 작업 디렉터리 (work) – 필요하면 나중에 이것도 PVC로 빼도 됨
     - name: work
-      hostPath:
-        path: /data/agent-work
-        type: DirectoryOrCreate
+      persistentVolumeClaim:
+        claimName: kiki-work
+
+    # 로그인/RAG DB (PVC)
+    - name: agent-db
+      persistentVolumeClaim:
+        claimName: kiki-agent-db-pvc
