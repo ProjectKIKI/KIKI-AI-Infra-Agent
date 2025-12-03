@@ -34,6 +34,7 @@ from pathlib import Path
 import textwrap
 import json
 from typing import Optional
+import getpass
 
 # optional deps
 try:
@@ -45,6 +46,36 @@ try:
     import yaml  # type: ignore
 except ImportError:
     yaml = None
+
+
+
+CONFIG_PATH = Path(os.environ.get("KIKI_CONFIG_PATH", "~/.kiki/config.json")).expanduser()
+
+
+def load_config() -> dict:
+    try:
+        if CONFIG_PATH.exists():
+            with CONFIG_PATH.open("r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def save_config(cfg: dict) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with CONFIG_PATH.open("w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def get_saved_user_token() -> Optional[str]:
+    cfg = load_config()
+    return cfg.get("user_token")
+
+
+def get_saved_username() -> Optional[str]:
+    cfg = load_config()
+    return cfg.get("username")
 
 
 # ─────────────────────────────────────────────
@@ -185,6 +216,11 @@ def call_llm_chat(
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+
+    # 로그인된 사용자가 있으면 사용자 토큰을 헤더로 전달
+    user_token = get_saved_user_token()
+    if user_token:
+        headers["X-KIKI-USER-TOKEN"] = user_token
 
     payload = {
         "model": model,
@@ -1108,6 +1144,115 @@ If the user asks for specific filtering or summarization, follow that.
     print(answer)
 
 
+
+# ─────────────────────────────────────────────
+# 로그인 / 히스토리
+# ─────────────────────────────────────────────
+
+def cmd_login(args: argparse.Namespace) -> None:
+    if requests is None:
+        print("[ERROR] 'requests' 모듈이 없습니다. pip install requests 로 설치하세요.", file=sys.stderr)
+        sys.exit(1)
+
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    base_url = base_url.rstrip("/")
+
+    username = args.username or input("Username: ")
+    password = args.password or getpass.getpass("Password: ")
+
+    url = f"{base_url}/api/v1/login"
+    try:
+        resp = requests.post(
+            url,
+            headers={"Content-Type": "application/json"},
+            data=json.dumps({"username": username, "password": password}),
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"[ERROR] 로그인 요청 실패: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if resp.status_code >= 400:
+        print(f"[ERROR] 로그인 실패: {resp.status_code} {resp.text}", file=sys.stderr)
+        sys.exit(1)
+
+    data = resp.json()
+    token = data.get("access_token")
+    if not token:
+        print("[ERROR] 로그인 응답에 access_token 이 없습니다.", file=sys.stderr)
+        sys.exit(1)
+
+    cfg = load_config()
+    cfg["username"] = username
+    cfg["user_token"] = token
+    save_config(cfg)
+
+    print(f"[KIKI] 로그인 성공: {username}")
+    print(f"[KIKI] 설정 파일: {CONFIG_PATH}")
+
+
+def cmd_history(args: argparse.Namespace) -> None:
+    if requests is None:
+        print("[ERROR] 'requests' 모듈이 없습니다. pip install requests 로 설치하세요.", file=sys.stderr)
+        sys.exit(1)
+
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    base_url = base_url.rstrip("/")
+
+    token = get_saved_user_token()
+    username = get_saved_username()
+
+    if not token:
+        print("[ERROR] 저장된 사용자 토큰이 없습니다. 먼저 'kiki login' 을 실행하세요.", file=sys.stderr)
+        sys.exit(1)
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-KIKI-USER-TOKEN": token,
+    }
+
+    # 1) 히스토리 리스트
+    try:
+        resp = requests.get(f"{base_url}/api/v1/history?limit={args.limit}", headers=headers, timeout=30)
+    except Exception as e:
+        print(f"[ERROR] history 요청 실패: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if resp.status_code >= 400:
+        print(f"[ERROR] history 응답 오류: {resp.status_code} {resp.text}", file=sys.stderr)
+        sys.exit(1)
+
+    data = resp.json()
+    items = data.get("items", [])
+
+    print()
+    print(f"=== KIKI 명령 히스토리 (user={username or 'unknown'}, 최근 {len(items)}개) ===")
+    for it in items:
+        print(f"- [{it['created_at']}] ({it['command_type']} / {it.get('target') or '-'})")
+        print(f"    {it['prompt']}")
+    print()
+
+    # 2) 요약 설명
+    try:
+        resp2 = requests.get(
+            f"{base_url}/api/v1/history/summary?limit={args.limit}",
+            headers=headers,
+            timeout=60,
+        )
+    except Exception as e:
+        print(f"[ERROR] history summary 요청 실패: {e}", file=sys.stderr)
+        return
+
+    if resp2.status_code >= 400:
+        print(f"[WARN] history summary 응답 오류: {resp2.status_code} {resp2.text}", file=sys.stderr)
+        return
+
+    summary = resp2.json().get("summary", "").strip()
+    if summary:
+        print("=== 요약: 이 사용자가 수행한 작업 개요 ===")
+        print(summary)
+        print()
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kiki",
@@ -1320,9 +1465,39 @@ def build_parser() -> argparse.ArgumentParser:
     p_lai.add_argument("--file", help="분석할 로그 파일 경로 (없으면 stdin 사용)")
     p_lai.add_argument("--max-lines", type=int, default=2000, help="최대 몇 줄까지 사용할지")
     p_lai.add_argument("--grep", help="사전 필터용 grep 패턴 (정규식)")
-    p_lai.set_defaults(func=cmd_log_ai)
 
-    return parser
+p_lai.set_defaults(func=cmd_log_ai)
+
+# login
+p_login = subparsers.add_parser(
+    "login",
+    help="KIKI 에이전트에 로그인 (username/password)",
+    formatter_class=argparse.RawTextHelpFormatter,
+)
+add_common_flags(p_login)
+p_login.add_argument("--username", help="로그인 사용자 이름")
+p_login.add_argument(
+    "--password",
+    help="로그인 비밀번호 (지정 안 하면 프롬프트 입력)",
+)
+p_login.set_defaults(func=cmd_login)
+
+# history
+p_hist = subparsers.add_parser(
+    "history",
+    help="로그인한 사용자가 수행한 KIKI 명령 히스토리 및 요약 조회",
+    formatter_class=argparse.RawTextHelpFormatter,
+)
+add_common_flags(p_hist)
+p_hist.add_argument(
+    "--limit",
+    type=int,
+    default=20,
+    help="최근 몇 개의 기록을 조회할지 (기본: 20)",
+)
+p_hist.set_defaults(func=cmd_history)
+
+return parser
 
 
 # ─────────────────────────────────────────────
