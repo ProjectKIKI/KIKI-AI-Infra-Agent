@@ -299,7 +299,9 @@ def run_ansible_playbook(playbook_path: Path, inventory: Optional[str], debug_en
 # ─────────────────────────────────────────────
 
 def cmd_chat(args: argparse.Namespace) -> None:
-    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    base_url = getattr(args, "base_url", None) or os.environ.get(
+        "KIKI_LLM_BASE_URL", "http://127.0.0.1:8082"
+    )
     model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
     api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
     debug_enabled = args.debug
@@ -1196,7 +1198,10 @@ def cmd_history(args: argparse.Namespace) -> None:
         print("[ERROR] 'requests' 모듈이 없습니다. pip install requests 로 설치하세요.", file=sys.stderr)
         sys.exit(1)
 
-    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    base_url = getattr(args, "base_url", None) or os.environ.get(
+        "KIKI_LLM_BASE_URL", "http://127.0.0.1:8082"
+    )
+
     base_url = base_url.rstrip("/")
 
     token = get_saved_user_token()
@@ -1474,7 +1479,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="KIKI 에이전트에 로그인 (username/password)",
         formatter_class=argparse.RawTextHelpFormatter,
     )
+
     add_common_flags(p_login)
+    
     p_login.add_argument("--username", help="로그인 사용자 이름")
     p_login.add_argument(
         "--password",
