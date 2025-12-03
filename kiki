@@ -1466,38 +1466,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_lai.add_argument("--max-lines", type=int, default=2000, help="최대 몇 줄까지 사용할지")
     p_lai.add_argument("--grep", help="사전 필터용 grep 패턴 (정규식)")
 
-p_lai.set_defaults(func=cmd_log_ai)
+    p_lai.set_defaults(func=cmd_log_ai)
 
-# login
-p_login = subparsers.add_parser(
-    "login",
-    help="KIKI 에이전트에 로그인 (username/password)",
-    formatter_class=argparse.RawTextHelpFormatter,
-)
-add_common_flags(p_login)
-p_login.add_argument("--username", help="로그인 사용자 이름")
-p_login.add_argument(
-    "--password",
-    help="로그인 비밀번호 (지정 안 하면 프롬프트 입력)",
-)
-p_login.set_defaults(func=cmd_login)
+    # login
+    p_login = subparsers.add_parser(
+        "login",
+        help="KIKI 에이전트에 로그인 (username/password)",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_login)
+    p_login.add_argument("--username", help="로그인 사용자 이름")
+    p_login.add_argument(
+        "--password",
+        help="로그인 비밀번호 (지정 안 하면 프롬프트 입력)",
+    )
+    p_login.set_defaults(func=cmd_login)
 
-# history
-p_hist = subparsers.add_parser(
-    "history",
-    help="로그인한 사용자가 수행한 KIKI 명령 히스토리 및 요약 조회",
-    formatter_class=argparse.RawTextHelpFormatter,
-)
-add_common_flags(p_hist)
-p_hist.add_argument(
-    "--limit",
-    type=int,
-    default=20,
-    help="최근 몇 개의 기록을 조회할지 (기본: 20)",
-)
-p_hist.set_defaults(func=cmd_history)
+    # history
+    p_hist = subparsers.add_parser(
+        "history",
+        help="로그인한 사용자가 수행한 KIKI 명령 히스토리 및 요약 조회",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    add_common_flags(p_hist)
+    p_hist.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="최근 몇 개의 기록을 조회할지 (기본: 20)",
+    )
+    p_hist.set_defaults(func=cmd_history)
 
-return parser
+    return parser
 
 
 # ─────────────────────────────────────────────
