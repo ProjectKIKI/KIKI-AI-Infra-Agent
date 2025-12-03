@@ -48,6 +48,9 @@ except ImportError:
     yaml = None
 
 
+# ─────────────────────────────────────────────
+# 사용자 설정 (로그인 토큰 저장)
+# ─────────────────────────────────────────────
 
 CONFIG_PATH = Path(os.environ.get("KIKI_CONFIG_PATH", "~/.kiki/config.json")).expanduser()
 
@@ -299,9 +302,7 @@ def run_ansible_playbook(playbook_path: Path, inventory: Optional[str], debug_en
 # ─────────────────────────────────────────────
 
 def cmd_chat(args: argparse.Namespace) -> None:
-    base_url = getattr(args, "base_url", None) or os.environ.get(
-        "KIKI_LLM_BASE_URL", "http://127.0.0.1:8082"
-    )
+    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
     model = args.model or os.environ.get("KIKI_LLM_MODEL", "local-model")
     api_key = args.api_key or os.environ.get("KIKI_LLM_API_KEY")
     debug_enabled = args.debug
@@ -1156,7 +1157,7 @@ def cmd_login(args: argparse.Namespace) -> None:
         print("[ERROR] 'requests' 모듈이 없습니다. pip install requests 로 설치하세요.", file=sys.stderr)
         sys.exit(1)
 
-    base_url = args.base_url or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
+    base_url = getattr(args, "base_url", None) or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
     base_url = base_url.rstrip("/")
 
     username = args.username or input("Username: ")
@@ -1198,10 +1199,7 @@ def cmd_history(args: argparse.Namespace) -> None:
         print("[ERROR] 'requests' 모듈이 없습니다. pip install requests 로 설치하세요.", file=sys.stderr)
         sys.exit(1)
 
-    base_url = getattr(args, "base_url", None) or os.environ.get(
-        "KIKI_LLM_BASE_URL", "http://127.0.0.1:8082"
-    )
-
+    base_url = getattr(args, "base_url", None) or os.environ.get("KIKI_LLM_BASE_URL", "http://127.0.0.1:8082")
     base_url = base_url.rstrip("/")
 
     token = get_saved_user_token()
@@ -1470,7 +1468,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_lai.add_argument("--file", help="분석할 로그 파일 경로 (없으면 stdin 사용)")
     p_lai.add_argument("--max-lines", type=int, default=2000, help="최대 몇 줄까지 사용할지")
     p_lai.add_argument("--grep", help="사전 필터용 grep 패턴 (정규식)")
-
     p_lai.set_defaults(func=cmd_log_ai)
 
     # login
@@ -1479,9 +1476,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="KIKI 에이전트에 로그인 (username/password)",
         formatter_class=argparse.RawTextHelpFormatter,
     )
-
     add_common_flags(p_login)
-    
+    add_llm_common_args(p_login)
     p_login.add_argument("--username", help="로그인 사용자 이름")
     p_login.add_argument(
         "--password",
@@ -1496,6 +1492,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawTextHelpFormatter,
     )
     add_common_flags(p_hist)
+    add_llm_common_args(p_hist)
     p_hist.add_argument(
         "--limit",
         type=int,
